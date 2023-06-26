@@ -1,0 +1,1 @@
+- when modifying dll code, need to ensure to rebuild the dll / project before running launcher
