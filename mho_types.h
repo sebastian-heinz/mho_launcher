@@ -1,6 +1,8 @@
 #ifndef MHO_LAUNCHER_MHO_TYPES_H
 #define MHO_LAUNCHER_MHO_TYPES_H
 
+#include <cstdint>
+
 typedef void *TQQApiHandle;
 
 typedef int (__cdecl *fn_perform_tpdu_encryption)(
@@ -34,6 +36,14 @@ typedef void (__cdecl *fn_protocalhandler_log)(
         wchar_t *p_str,
         void *p_str_fmt_args
 );
+
+struct HandlerCallbackDefintion {
+    uint32_t vftable_ptr;                 /* 0x00 */
+    uint32_t mgr_instance_ptr;            /* 0x04 */
+    void* handler_callback_function_ptr;  /* 0x08 */
+    uint32_t unknown_field;               /* 0x0C */
+};
+
 
 /***
  * p_out_str_fmt - out buffer to hold formatted string

@@ -1,6 +1,7 @@
 #include "mho_launcher_lib.h"
 #include "memory.h"
 #include "mho_types.h"
+#include "cs_cmd.h"
 #include "util.h"
 #include "tenproxy_tcls_sharedmememory.h"
 
@@ -22,7 +23,7 @@ fn_perform_tpdu_encryption org_perform_tpdu_encryption = nullptr;
 fn_perform_tpdu_decryption org_perform_tpdu_decryption = nullptr;
 fn_aes_key_expansion org_aes_key_expansion = nullptr;
 
-bool log_crypto = true;
+bool log_crypto = false;
 
 /// Event System - START
 // Had some issues with printing console logs on game threads.
@@ -89,6 +90,19 @@ void __cdecl protocalhandler_log(
     log("protocalhandler_log:%s\n", log_text.c_str());
 }
 
+const int IGNORE_LOGS_SIZE = 9;
+std::string IGNORE_LOGS[IGNORE_LOGS_SIZE] = {
+        "$4[Error] I3DEngine::LoadStatObj: filename is not specified",
+        "$6[Warning] Texture does not exist",
+        "$6[Warning] Warning: CTexMan::ImagePreprocessing",
+        "$6[Warning] Error: CTexMan::ImagePreprocessing:",
+        "$6[Warning] CAF-File Not Found:",
+        "$6[Warning] Normal map should have '_ddn' suffix in filename",
+        "$6[Warning] CryAnimation: process Aimpose",
+        "$6[Warning] Reference if not existing Joint-Name. Aim-IK disabled",
+        "$6[Warning] Failed to create animation alias"
+};
+
 void client_log(int do_log, char *near_log_ptr) {
     if (do_log == 0) {
         return;
@@ -105,6 +119,13 @@ void client_log(int do_log, char *near_log_ptr) {
         return;
     }
     std::string log_text = std::string(log_ptr, log_len);
+
+    for (int i = 0; i < IGNORE_LOGS_SIZE; i++) {
+        if (log_text.find(IGNORE_LOGS[i]) != std::string::npos) {
+            return;
+        }
+    }
+
     log("client_log: %s \n", log_text.c_str());
 }
 
@@ -187,6 +208,32 @@ int __cdecl perform_tpdu_decryption(
     return ret;
 }
 
+void __cdecl register_handler(
+        uint32_t packet_id,
+        HandlerCallbackDefintion *handler_definition
+) {
+    CsCmd cmd;
+    bool found = false;
+    for (int i = 0; i < CMDS_SIZE; i++) {
+        if (CMDS[i].id == packet_id) {
+            found = true;
+            cmd = CMDS[i];
+            break;
+        }
+    }
+
+    if (found) {
+        log("register_handler %u %s @%p, unk:%u\n",
+            packet_id,
+            cmd.name.c_str(),
+            handler_definition->handler_callback_function_ptr,
+            handler_definition->unknown_field
+        );
+    } else {
+        log("register_handler !!! NOT FOUND !!! PacketId: %u \n", packet_id);
+    }
+}
+
 int __cdecl perform_tpdu_encryption(
         TQQApiHandle *apiHandle,
         void *inputBuffer,
@@ -267,6 +314,26 @@ void asm_tenproxy_log() {
     }
 }
 
+DWORD handler_ret_jmp;
+_declspec(naked)
+void asm_register_handler() {
+    _asm
+    {
+        pushad
+        mov ebx, [esp + 0x28]
+        mov eax, [esp + 0x2C]
+        push eax
+        push ebx
+        call register_handler
+        add esp, 0x8
+        popad
+        // recover stolen bytes
+        mov ebp, esp
+        mov eax, dword ptr ds:[ecx+0xC]
+        jmp handler_ret_jmp
+    }
+}
+
 // @formatter:on
 
 
@@ -288,7 +355,12 @@ void run_crygame() {
     org_fn_crygame_13EC290 = (fn_crygame_13EC290) (crygame_addr + 0x13F3640);
 
     // hook existing ones
-    hook_call(crygame_addr, 0x11AED64, &crygame_13F3640);
+    //hook_call(crygame_addr, 0x11AED64, &crygame_13F3640);
+
+
+    // listen to register packet handler
+    patch_jmp(crygame_addr, 0x1223631, &asm_register_handler);
+    handler_ret_jmp = crygame_addr + 0x1223636;
 }
 
 
