@@ -37,6 +37,7 @@ typedef void (__cdecl *fn_protocalhandler_log)(
         void *p_str_fmt_args
 );
 
+
 struct HandlerCallbackDefintion {
     uint32_t vftable_ptr;                 /* 0x00 */
     uint32_t mgr_instance_ptr;            /* 0x04 */

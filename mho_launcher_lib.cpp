@@ -223,7 +223,7 @@ void __cdecl register_handler(
     }
 
     if (found) {
-        log("register_handler %u %s @%p, unk:%u\n",
+        log("register_handler %u %s handler_fn:%p, unk:%u\n",
             packet_id,
             cmd.name.c_str(),
             handler_definition->handler_callback_function_ptr,
@@ -231,6 +231,41 @@ void __cdecl register_handler(
         );
     } else {
         log("register_handler !!! NOT FOUND !!! PacketId: %u \n", packet_id);
+    }
+}
+
+void __cdecl call_handler(
+        void *call_fn,
+        HandlerCallbackDefintion *handler_definition,
+        uint32_t packet_id,
+        uint8_t *packet_data
+) {
+    CsCmd cmd;
+    bool found = false;
+    for (int i = 0; i < CMDS_SIZE; i++) {
+        if (CMDS[i].id == packet_id) {
+            found = true;
+            cmd = CMDS[i];
+            break;
+        }
+    }
+
+    if (found) {
+        log("call_handler: CMD:%u %s handler_fn:%p, unk:%u, call_fn:%p\n",
+            packet_id,
+            cmd.name.c_str(),
+            handler_definition->handler_callback_function_ptr,
+            handler_definition->unknown_field,
+            call_fn
+        );
+    } else {
+        log("call_handler: !!! NOT FOUND !!!  CMD:%u %s handler_fn:%p, unk:%u, call_fn:%p\n",
+            packet_id,
+            cmd.name.c_str(),
+            handler_definition->handler_callback_function_ptr,
+            handler_definition->unknown_field,
+            call_fn
+        );
     }
 }
 
@@ -334,6 +369,28 @@ void asm_register_handler() {
     }
 }
 
+DWORD call_handler_ret_jmp;
+//DWORD call_handler_hook_ptr;
+//DWORD call_handler_hook;
+_declspec(naked)
+void asm_call_handler() {
+    _asm
+    {
+        pushad
+        push dword ptr ss:[ebp+0xC]
+        push esi
+        push dword ptr ss:[ebp+0x8]
+        mov eax, dword ptr ds:[ecx]
+        push dword ptr ds:[eax]
+        call call_handler
+        add esp, 0x10
+        popad
+        push dword ptr ss:[ebp+0xC]
+        mov eax, dword ptr ds:[ecx]
+        jmp call_handler_ret_jmp
+    }
+}
+
 // @formatter:on
 
 
@@ -361,6 +418,12 @@ void run_crygame() {
     // listen to register packet handler
     patch_jmp(crygame_addr, 0x1223631, &asm_register_handler);
     handler_ret_jmp = crygame_addr + 0x1223636;
+
+
+    patch_jmp(crygame_addr, 0x1223148, &asm_call_handler);
+    call_handler_ret_jmp = crygame_addr + 0x122314D;
+    //call_handler_hook = (DWORD) call_handler;
+    //call_handler_hook_ptr = (DWORD) &call_handler_hook;
 }
 
 
