@@ -1,3 +1,9 @@
+# Editor
+/.idea
+/.vs
+
+# CMake / build artifacts from VS and idea
 /cmake-build-debug-visual-studio
 /cmake-build-debug
-/.idea
+/out
+CMakeSettings.json
