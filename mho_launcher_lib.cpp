@@ -2,6 +2,7 @@
 #include "memory.h"
 #include "mho_types.h"
 #include "cs_cmd.h"
+#include "internal_notification_ids.h"
 #include "util.h"
 #include "tenproxy_tcls_sharedmememory.h"
 
@@ -269,6 +270,29 @@ void __cdecl call_handler(
     }
 }
 
+void __cdecl log_handle_logic_or_game_event_notification(
+    char* event_cstr,
+    InternalEventNotification* notif,
+    uint32_t unk_group_index
+) {
+
+    std::string notification_type = "unknown";
+    std::string event = event_cstr;
+    if (event.find("handleLogicNotification") != std::string::npos) {
+        notification_type = GetMHLogicEventIDName(static_cast<MHLogicEventID>(notif->notification_id));
+    }
+    else if (event.find("handleGameNotification") != std::string::npos) {
+        notification_type = GetMHGameEventIDName(static_cast<MHGameEventID>(notif->notification_id));
+    }
+
+    log("log_handle_logic_or_game_event_notification(event:%s, notification_id:%u (type: %s), unk_group_idx: %u)\n",
+        event_cstr,
+        notif->notification_id,
+        notification_type.c_str(),
+        unk_group_index
+    );
+}
+
 int __cdecl perform_tpdu_encryption(
         TQQApiHandle *apiHandle,
         void *inputBuffer,
@@ -349,7 +373,7 @@ void asm_tenproxy_log() {
     }
 }
 
-DWORD handler_ret_jmp;
+DWORD register_handler_ret_jmp;
 _declspec(naked)
 void asm_register_handler() {
     _asm
@@ -365,7 +389,7 @@ void asm_register_handler() {
         // recover stolen bytes
         mov ebp, esp
         mov eax, dword ptr ds:[ecx+0xC]
-        jmp handler_ret_jmp
+        jmp register_handler_ret_jmp
     }
 }
 
@@ -388,6 +412,28 @@ void asm_call_handler() {
         push dword ptr ss:[ebp+0xC]
         mov eax, dword ptr ds:[ecx]
         jmp call_handler_ret_jmp
+    }
+}
+
+DWORD log_handle_logic_or_game_event_notification_ret_jmp;
+_declspec(naked)
+void asm_log_handle_logic_or_game_event_notification() {
+    _asm
+    {
+        pushad
+        mov ecx, [esp + 0x28]
+        mov ebx, [esp + 0x2C]
+        mov eax, [esp + 0x30]
+        push eax
+        push ebx
+        push ecx
+        call log_handle_logic_or_game_event_notification
+        add esp, 0xc
+        popad
+        // recover stolen bytes
+        mov ebp, esp
+        sub esp, 18h
+        jmp log_handle_logic_or_game_event_notification_ret_jmp
     }
 }
 
@@ -417,13 +463,17 @@ void run_crygame() {
 
     // listen to register packet handler
     patch_jmp(crygame_addr, 0x1223631, &asm_register_handler);
-    handler_ret_jmp = crygame_addr + 0x1223636;
+    register_handler_ret_jmp = crygame_addr + 0x1223636;
 
 
     patch_jmp(crygame_addr, 0x1223148, &asm_call_handler);
     call_handler_ret_jmp = crygame_addr + 0x122314D;
     //call_handler_hook = (DWORD) call_handler;
     //call_handler_hook_ptr = (DWORD) &call_handler_hook;
+
+    patch_jmp(crygame_addr, 0x50ab31, &asm_log_handle_logic_or_game_event_notification);
+    log_handle_logic_or_game_event_notification_ret_jmp = crygame_addr + 0x50ab36;
+
 }
 
 

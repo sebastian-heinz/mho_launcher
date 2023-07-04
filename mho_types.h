@@ -46,6 +46,12 @@ struct HandlerCallbackDefintion {
 };
 
 
+struct InternalEventNotification {
+    uint32_t unk0;
+    uint32_t unk2;
+    uint32_t notification_id;
+};
+
 /***
  * p_out_str_fmt - out buffer to hold formatted string
  * p_out_str_fmt_size - size of out buffer
