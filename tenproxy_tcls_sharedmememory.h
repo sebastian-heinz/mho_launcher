@@ -25,15 +25,26 @@ private:
     size_t aes_key_size;
     uint8_t *var_60;
     size_t var_60_size;
-    uint8_t *var_4;
-    size_t var_4_size;
+    uint8_t *qq_sig_info_unified;
+    size_t qq_sig_info_unified_size;
     uint8_t *var_27;
     size_t var_27_size;
     uint8_t *var_25;
     size_t var_25_size;
+    uint32_t qq_uin;
 
 public:
     TenProxyTclsSharedMeMemory() {
+
+        // use this as username
+        qq_uin = 1235;
+
+        // use this as password hash
+        qq_sig_info_unified_size = 96;
+        qq_sig_info_unified = new uint8_t[qq_sig_info_unified_size];
+        memset(qq_sig_info_unified, 0, qq_sig_info_unified_size);
+
+
         //connection = "127.0.0.1:8140;127.0.0.1:8141;127.0.0.1:8142;vport:8143";
         connection = "127.0.0.1:8142";
         ip = "127.0.0.1";
@@ -53,9 +64,7 @@ public:
                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
         };
 
-        var_4_size = 96;
-        var_4 = new uint8_t[var_4_size];
-        memset(var_4, 0, var_4_size);
+
 
         var_27_size = 72;
         var_27 = new uint8_t[var_27_size];
@@ -122,12 +131,12 @@ public:
         // var_2
         var_2_offset = buf->get_position();
         buf->write_u32(4);
-        buf->write_u32(0x14924512);
+        buf->write_u32(qq_uin);
 
         // var_6
         var_6_offset = buf->get_position();
         buf->write_u32(4);
-        buf->write_u32(0x14924512);
+        buf->write_u32(qq_uin);
 
         // var_3
         var_3_offset = buf->get_position();
@@ -137,8 +146,8 @@ public:
 
         // var_4
         var_4_offset = buf->get_position();
-        buf->write_u32(var_4_size);
-        buf->write_data(var_4, var_4_size);
+        buf->write_u32(qq_sig_info_unified_size);
+        buf->write_data(qq_sig_info_unified, qq_sig_info_unified_size);
 
         // var_5_aes_key_offset
         var_5_aes_key_offset = buf->get_position();
@@ -263,12 +272,12 @@ public:
         // var_20_v6
         var_20_v6_offset = buf->get_position();
         buf->write_u32(0x4);
-        buf->write_u32(0x14924512);
+        buf->write_u32(qq_uin);
 
         // var_20_v7
         var_20_v7_offset = buf->get_position();
         buf->write_u32(0x4);
-        buf->write_u32(0x14924512);
+        buf->write_u32(qq_uin);
 
         // var_20_v8
         var_20_v8_offset = buf->get_position();
