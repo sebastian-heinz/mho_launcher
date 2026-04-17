@@ -1,10 +1,11 @@
-#ifndef MHO_LAUNCHER_MEMORY_H
-#define MHO_LAUNCHER_MEMORY_H
+#ifndef MHO_PATCH_H
+#define MHO_PATCH_H
 
 #include <windows.h>
+#include <cstring>
 
 template<typename I>
-void GetMemory(LPVOID address, I &value, int byteNum) {
+inline void GetMemory(LPVOID address, I &value, int byteNum) {
     unsigned long OldProtection;
     VirtualProtect(address, byteNum, PAGE_EXECUTE_READWRITE, &OldProtection);
     memcpy(static_cast<void *>(value), address, byteNum);
@@ -12,14 +13,14 @@ void GetMemory(LPVOID address, I &value, int byteNum) {
 }
 
 template<typename I>
-void SetMemory(LPVOID address, I value, int byteNum) {
+inline void SetMemory(LPVOID address, I value, int byteNum) {
     unsigned long OldProtection;
     VirtualProtect(address, byteNum, PAGE_EXECUTE_READWRITE, &OldProtection);
     *(I *) address = value;
     VirtualProtect(address, byteNum, OldProtection, &OldProtection);
 }
 
-void ReadMemory(LPVOID address, void *value, int byteNum) {
+inline void ReadMemory(LPVOID address, void *value, int byteNum) {
     unsigned long OldProtection;
     VirtualProtect(address, byteNum, PAGE_EXECUTE_READWRITE, &OldProtection);
     memcpy(value, address, byteNum);
@@ -27,14 +28,15 @@ void ReadMemory(LPVOID address, void *value, int byteNum) {
 }
 
 template<typename I>
-void WriteMemory(LPVOID address, I value, int byteNum) {
+inline void WriteMemory(LPVOID address, I value, int byteNum) {
     unsigned long OldProtection;
     VirtualProtect(address, byteNum, PAGE_EXECUTE_READWRITE, &OldProtection);
     memcpy(address, value, byteNum);
     VirtualProtect(address, byteNum, OldProtection, &OldProtection);
 }
 
-void hook_call(DWORD baseAddr, DWORD offset, LPVOID fnAddr) {
+template<typename F>
+inline void hook_call(DWORD baseAddr, DWORD offset, F fnAddr) {
     DWORD patchHookAddr = baseAddr + offset;
     DWORD relativeFnHookAddr = (DWORD) ((char *) fnAddr - (char *) (patchHookAddr + 1 + 4));
     const char *patchInitStart = "\xE8";
@@ -44,7 +46,8 @@ void hook_call(DWORD baseAddr, DWORD offset, LPVOID fnAddr) {
     WriteMemory((LPVOID) (patchHookAddr + 1), bRelativeHookInitAddr, 4);
 }
 
-void patch_jmp(DWORD baseAddr, DWORD offset, LPVOID fnAddr) {
+template<typename F>
+inline void patch_jmp(DWORD baseAddr, DWORD offset, F fnAddr) {
     DWORD patchHookAddr = baseAddr + offset;
     DWORD relativeFnHookAddr = (DWORD) ((char *) fnAddr - (char *) (patchHookAddr + 1 + 4));
     const char *patchInitStart = "\xE9";
@@ -54,7 +57,7 @@ void patch_jmp(DWORD baseAddr, DWORD offset, LPVOID fnAddr) {
     WriteMemory((LPVOID) (patchHookAddr + 1), bRelativeHookInitAddr, 4);
 }
 
-void patch_nop(DWORD baseAddr, DWORD offset, int count) {
+inline void patch_nop(DWORD baseAddr, DWORD offset, int count) {
     DWORD patchHookAddr = baseAddr + offset;
     char *nops = new char[count];
     for (int i = 0; i < count; i++) {
@@ -64,4 +67,4 @@ void patch_nop(DWORD baseAddr, DWORD offset, int count) {
     delete[] nops;
 }
 
-#endif //MHO_LAUNCHER_MEMORY_H
+#endif
