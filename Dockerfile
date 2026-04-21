@@ -13,4 +13,4 @@ RUN update-alternatives --set i686-w64-mingw32-g++ /usr/bin/i686-w64-mingw32-g++
 WORKDIR /build
 
 ENTRYPOINT ["bash", "-c", \
-    "cmake -DCMAKE_TOOLCHAIN_FILE=/src/toolchain-mingw32.cmake -DCMAKE_CXX_STANDARD=17 -B /build /src && cmake --build /build --verbose && cp /build/mho_launcher.exe /build/mho_launcher_lib.dll /out/"]
+    "cmake -DCMAKE_TOOLCHAIN_FILE=/src/toolchain-mingw32.cmake -DCMAKE_CXX_STANDARD=17 -B /build /src && cmake --build /build --verbose && cp /build/ag_mho.exe /build/ag_mho.dll /build/TerSafe.dll /build/BugTrace.dll /out/"]

@@ -13,24 +13,41 @@ if(MINGW)
 endif()
 
 # --- Launcher executable ---
-add_executable(mho_launcher_exe launcher/main.cpp)
-target_include_directories(mho_launcher_exe PRIVATE common/ launcher/)
-set_target_properties(mho_launcher_exe PROPERTIES OUTPUT_NAME "mho_launcher")
+add_executable(ag_mho_exe ag_mho_exe/main.cpp)
+target_include_directories(ag_mho_exe PRIVATE common/ ag_mho_exe/)
+set_target_properties(ag_mho_exe PROPERTIES OUTPUT_NAME "ag_mho")
 
 # --- Injected DLL ---
-add_library(mho_launcher_dll SHARED
-    dll/dllmain.cpp
-    dll/log.cpp
-    dll/hooks_mhoclient.cpp
-    dll/hooks_crygame.cpp
-    dll/hooks_protocalhandler.cpp
-    dll/hooks_tenproxy.cpp
+add_library(ag_mho_dll SHARED
+    ag_mho_dll/dllmain.cpp
+    ag_mho_dll/log.cpp
+    ag_mho_dll/hooks_mhoclient.cpp
+    ag_mho_dll/hooks_crygame.cpp
+    ag_mho_dll/hooks_protocalhandler.cpp
+    ag_mho_dll/hooks_tenproxy.cpp
+    ag_mho_dll/hooks_tersafe.cpp
 )
-target_include_directories(mho_launcher_dll PRIVATE
+target_include_directories(ag_mho_dll PRIVATE
     common/
-    data/
-    dll/
-    launcher/
+    ag_mho_dll/
+    ag_mho_exe/
     third_party/concurrentqueue/
 )
-set_target_properties(mho_launcher_dll PROPERTIES OUTPUT_NAME "mho_launcher_lib" PREFIX "")
+set_target_properties(ag_mho_dll PROPERTIES OUTPUT_NAME "ag_mho" PREFIX "")
+
+# --- TerSafe DLL ---
+add_library(tersafe_dll SHARED
+    tersafe_dll/tersafe.c
+    tersafe_dll/tersafe.def
+)
+set_target_properties(tersafe_dll PROPERTIES OUTPUT_NAME "TerSafe" PREFIX "")
+target_link_options(tersafe_dll PRIVATE -Wl,--kill-at)
+
+# --- BugTrace DLL ---
+add_library(bugtrace_dll SHARED
+    bugtrace_dll/bugtrace.c
+    bugtrace_dll/bugtrace.def
+)
+set_target_properties(bugtrace_dll PROPERTIES OUTPUT_NAME "BugTrace" PREFIX "")
+target_link_libraries(bugtrace_dll PRIVATE dbghelp)
+target_link_options(bugtrace_dll PRIVATE -Wl,--kill-at)

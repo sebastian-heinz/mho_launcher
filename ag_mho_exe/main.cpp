@@ -23,14 +23,6 @@ static void llog(const char *fmt, ...) {
 }
 
 static void llog_init() {
-    time_t now = time(nullptr);
-    struct tm *t = localtime(&now);
-    char timestamp[64];
-    snprintf(timestamp, sizeof(timestamp), "mho_launcher_exe_%04d%02d%02d_%02d%02d%02d.log",
-             t->tm_year + 1900, t->tm_mon + 1, t->tm_mday,
-             t->tm_hour, t->tm_min, t->tm_sec);
-    std::string path = ws_2_s(get_exe_dir()) + timestamp;
-    launcher_log.open(path, std::ios::out | std::ios::trunc);
 }
 
 
@@ -110,7 +102,7 @@ void inject_lunch(PROCESS_INFORMATION pi) {
         return;
     }
 
-    std::wstring mho_launcher_lib_path = get_exe_dir() + L"mho_launcher_lib.dll";
+    std::wstring mho_launcher_lib_path = get_exe_dir() + L"ag_mho.dll";
     llog("Injecting DLL: \"%s\"\n", ws_2_s(mho_launcher_lib_path).c_str());
 
     const wchar_t *lib_path = mho_launcher_lib_path.c_str();

@@ -36,11 +36,11 @@ static void run_events() {
 }
 
 void log_init() {
-    // Build absolute path next to the exe: <exe_dir>/mho_launcher_YYYYMMDD_HHMMSS.log
+    // Build absolute path next to the exe: <exe_dir>/ag_mho_YYYYMMDD_HHMMSS.log
     time_t now = time(nullptr);
     struct tm *t = localtime(&now);
     char timestamp[64];
-    snprintf(timestamp, sizeof(timestamp), "mho_launcher_%04d%02d%02d_%02d%02d%02d.log",
+    snprintf(timestamp, sizeof(timestamp), "ag_mho_log_%04d%02d%02d_%02d%02d%02d.log",
              t->tm_year + 1900, t->tm_mon + 1, t->tm_mday,
              t->tm_hour, t->tm_min, t->tm_sec);
 

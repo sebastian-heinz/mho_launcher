@@ -4,6 +4,7 @@
 #include "hooks_crygame.h"
 #include "hooks_protocalhandler.h"
 #include "hooks_tenproxy.h"
+#include "hooks_tersafe.h"
 
 #ifdef __MINGW32__
 #include "compat.h"
@@ -73,6 +74,7 @@ static void run() {
     std::thread(install_crygame_hooks).detach();
     std::thread(install_protocalhandler_hooks).detach();
     std::thread(install_tenproxy_hooks).detach();
+    std::thread(install_tersafe_hooks).detach();
 }
 
 BOOL WINAPI DllMain(HINSTANCE h_instance, DWORD fdw_reason, LPVOID lpv_reserved) {

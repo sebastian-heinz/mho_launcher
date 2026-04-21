@@ -74,9 +74,7 @@ void install_mhoclient_hooks(DWORD mhoclient_base) {
     log("server_url_address: 0x%08X \n", server_url_address);
     log("mhoclient_base: 0x%08X \n", mhoclient_base);
 
-    // TODO: client_log jmp hook disabled — crashes under Wine/MinGW.
-    // The stolen bytes or register extraction may need adjustment for this binary.
-    // install_jmp_hooks(mhoclient_base, mhoclient_jmp_hooks, std::size(mhoclient_jmp_hooks));
-    // install_nop_patches(mhoclient_base, mhoclient_nops, std::size(mhoclient_nops));
-    log("mhoclient hooks: client_log DISABLED (debugging)\n");
+    install_jmp_hooks(mhoclient_base, mhoclient_jmp_hooks, std::size(mhoclient_jmp_hooks));
+    install_nop_patches(mhoclient_base, mhoclient_nops, std::size(mhoclient_nops));
+    log("mhoclient hooks: client_log ENABLED\n");
 }
