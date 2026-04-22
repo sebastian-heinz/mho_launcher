@@ -1,10 +1,14 @@
 #include "hooks_mhoclient.h"
 #include "log.h"
 #include "hook_table.h"
+#include "ag_ini.h"
+#include "win_util.h"
 
 #include <string>
 
 DWORD server_url_address = 0;
+
+static bool g_log_client_logs = false;
 
 static const int IGNORE_LOGS_SIZE = 9;
 static std::string IGNORE_LOGS[IGNORE_LOGS_SIZE] = {
@@ -20,6 +24,9 @@ static std::string IGNORE_LOGS[IGNORE_LOGS_SIZE] = {
 };
 
 static void client_log(int do_log, char *near_log_ptr) {
+    if (!g_log_client_logs) {
+        return;
+    }
     if (do_log == 0) {
         return;
     }
@@ -73,6 +80,12 @@ void install_mhoclient_hooks(DWORD mhoclient_base) {
     server_url_address = mhoclient_base + 0x157AAA0;
     log("server_url_address: 0x%08X \n", server_url_address);
     log("mhoclient_base: 0x%08X \n", mhoclient_base);
+
+    std::wstring ini_path = get_exe_dir() + L"ag_mho.ini";
+    ag_ini_create_if_missing(ini_path, AG_MHO_INI_DEFAULTS);
+    auto ag_cfg = ag_ini_read(ini_path);
+    g_log_client_logs = ag_ini_get_int(ag_cfg, "log_client_logs", 0) != 0;
+    log("config log_client_logs = %d \n", g_log_client_logs ? 1 : 0);
 
     install_jmp_hooks(mhoclient_base, mhoclient_jmp_hooks, std::size(mhoclient_jmp_hooks));
     install_nop_patches(mhoclient_base, mhoclient_nops, std::size(mhoclient_nops));

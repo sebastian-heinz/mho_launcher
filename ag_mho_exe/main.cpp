@@ -1,6 +1,7 @@
 #include "win_util.h"
 #include "str_util.h"
 #include "shared_memory.h"
+#include "ag_ini.h"
 
 #include <windows.h>
 #include <iostream>
@@ -156,7 +157,15 @@ int main(int argc, char *argv[]) {
     llog("mho_dir: \"%s\"\n", ws_2_s(mho_dir).c_str());
     llog("mho_exe: \"%s\"\n", ws_2_s(mho_exe).c_str());
 
-    if (false) {
+    std::wstring ini_path = get_exe_dir() + L"ag_mho.ini";
+    if (ag_ini_create_if_missing(ini_path, AG_MHO_INI_DEFAULTS)) {
+        llog("Created default config: \"%s\"\n", ws_2_s(ini_path).c_str());
+    }
+    auto ag_cfg = ag_ini_read(ini_path);
+    int cfg_inject_dll = ag_ini_get_int(ag_cfg, "inject_dll", 0);
+    llog("config inject_dll = %d\n", cfg_inject_dll);
+
+    if (!cfg_inject_dll) {
         PROCESS_INFORMATION pi = CreateMhoProcessOrg(mho_dir, mho_exe, mho_arg, work_dir);
         TenProxyTclsSharedMeMemory *tptsmm = new TenProxyTclsSharedMeMemory();
         tptsmm->map(pi.dwProcessId);

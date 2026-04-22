@@ -3,6 +3,8 @@
 #include "hook_table.h"
 #include "hex_dump.h"
 #include "str_util.h"
+#include "ag_ini.h"
+#include "win_util.h"
 
 #include "mho_types.h"
 
@@ -242,6 +244,12 @@ void install_protocalhandler_hooks() {
     DWORD base = wait_for_module("protocalhandler");
     g_proto_base = base;
     log("got protocalhandler: %p \n", (void*)base);
+
+    std::wstring ini_path = get_exe_dir() + L"ag_mho.ini";
+    ag_ini_create_if_missing(ini_path, AG_MHO_INI_DEFAULTS);
+    auto ag_cfg = ag_ini_read(ini_path);
+    log_crypto = ag_ini_get_int(ag_cfg, "log_encrypted_network", 0) != 0;
+    log("config log_encrypted_network = %d \n", log_crypto ? 1 : 0);
 
     org_protocalhandler_log = (fn_protocalhandler_log)(base + 0x1703);
     org_protocalhandler_format_log = (fn_protocalhandler_log_format)(base + 0x1A96);
