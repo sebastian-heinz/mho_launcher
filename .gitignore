@@ -8,3 +8,5 @@
 /build-*/
 /out
 CMakeSettings.json
+
+.DS_Store
