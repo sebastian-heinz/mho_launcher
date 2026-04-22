@@ -36,7 +36,7 @@ static void run_events() {
 }
 
 void log_init() {
-    // Build absolute path next to the exe: <exe_dir>/ag_mho_YYYYMMDD_HHMMSS.log
+    // Build absolute path: <exe_dir>/ag_logs/ag_mho_log_YYYYMMDD_HHMMSS.log
     time_t now = time(nullptr);
     struct tm *t = localtime(&now);
     char timestamp[64];
@@ -44,8 +44,10 @@ void log_init() {
              t->tm_year + 1900, t->tm_mon + 1, t->tm_mday,
              t->tm_hour, t->tm_min, t->tm_sec);
 
-    std::wstring dir = get_exe_dir();
-    std::string path = ws_2_s(dir) + timestamp;
+    std::wstring log_dir = get_exe_dir() + L"ag_logs\\";
+    CreateDirectoryW(log_dir.c_str(), NULL);  // no-op if it already exists
+
+    std::string path = ws_2_s(log_dir) + timestamp;
     log_file.open(path, std::ios::out | std::ios::trunc);
 
     events = new moodycamel::BlockingConcurrentQueue<LogEvent>(100);

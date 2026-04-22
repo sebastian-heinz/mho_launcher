@@ -1,0 +1,31 @@
+name: Build & Release
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build (Docker + MinGW-w64)
+        run: ./build.sh
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="build-$(date -u +%Y%m%d-%H%M%S)-${GITHUB_SHA::7}"
+          gh release create "$TAG" \
+            out/ag_mho.exe out/ag_mho.dll out/TerSafe.dll out/BugTrace.dll \
+            --target "${GITHUB_SHA}" \
+            --title "$TAG" \
+            --notes "Built from ${GITHUB_SHA} on $(date -u +%Y-%m-%dT%H:%M:%SZ)"
