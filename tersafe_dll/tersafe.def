@@ -1,0 +1,12 @@
+LIBRARY TerSafe
+EXPORTS
+    CreateObj   @1
+    DllEntry1   @2
+    DllEntry2   @3
+    DllEntry3   @4
+    DllEntry4   @5
+    DllEntry5   @6
+    DllEntry6   @7
+    DllEntry7   @8
+    DllEntry8   @9
+    DllEntry    @10

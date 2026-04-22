@@ -2018,7 +2018,7 @@ private:
 					
 					// Dequeue
 					auto& el = *((*block)[index]);
-					if (!MOODYCAMEL_NOEXCEPT_ASSIGN(T, T&&, element = static_cast<Event>(std::move(el)))) {
+					if (!MOODYCAMEL_NOEXCEPT_ASSIGN(T, T&&, element = static_cast<T>(std::move(el)))) {
 						// Make sure the element is still fully dequeued and destroyed even if the assignment
 						// throws
 						struct Guard {

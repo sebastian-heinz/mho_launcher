@@ -2,8 +2,11 @@
 /.idea
 /.vs
 
-# CMake / build artifacts from VS and idea
+# CMake / build artifacts
 /cmake-build-debug-visual-studio
 /cmake-build-debug
+/build-*/
 /out
 CMakeSettings.json
+
+.DS_Store

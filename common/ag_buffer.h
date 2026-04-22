@@ -1,6 +1,7 @@
 #ifndef MHO_LAUNCHER_AG_BUFFER_H
 #define MHO_LAUNCHER_AG_BUFFER_H
 
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <vector>

@@ -1,0 +1,7 @@
+LIBRARY BugTrace
+EXPORTS
+    WriteUserDataToDump         @1
+    CreateUploadBOSDDumpThread  @2
+    InitializeBugTrace          @3
+    SetBOSDDumpInfo             @4
+    UploadBOSDDump              @5

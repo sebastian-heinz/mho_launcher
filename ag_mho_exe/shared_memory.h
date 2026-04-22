@@ -1,8 +1,10 @@
-#ifndef MHO_LAUNCHER_TENPROXY_TCLS_SHAREDMEMEMORY_H
-#define MHO_LAUNCHER_TENPROXY_TCLS_SHAREDMEMEMORY_H
+#ifndef MHO_SHARED_MEMORY_H
+#define MHO_SHARED_MEMORY_H
 
 #include "ag_buffer.h"
-#include "util.h"
+#include "str_util.h"
+#include "win_util.h"
+#include "hex_dump.h"
 
 #include <thread>
 #include <string>
@@ -439,4 +441,4 @@ public:
 
 };
 
-#endif //MHO_LAUNCHER_TENPROXY_TCLS_SHAREDMEMEMORY_H
+#endif
