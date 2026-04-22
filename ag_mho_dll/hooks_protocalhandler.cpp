@@ -7,6 +7,8 @@
 #include "mho_types.h"
 
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <string>
 #include <cwchar>
 
@@ -19,6 +21,18 @@ static fn_perform_tpdu_decryption org_perform_tpdu_decryption = nullptr;
 static fn_aes_key_expansion org_aes_key_expansion = nullptr;
 
 static bool log_crypto = false;
+
+/* Captured send context — set on first encryption call */
+static DWORD g_proto_base = 0;
+static TQQApiHandle *g_apiHandle = NULL;
+
+/* proto+0x36F30: thiscall send function
+ * Signature: int __thiscall SendPacket(void* this, void* unknown, void* data, void* apiHandlePtr)
+ * this = connection object (first arg of Invoke dispatch)
+ * ret 0xC (cleans 3 stack args)
+ */
+typedef int (__thiscall *fn_proto_send)(void *ecx, void *arg1, void *arg2, void *arg3);
+static fn_proto_send g_proto_send = NULL;
 
 // --- callbacks ---
 
@@ -102,6 +116,12 @@ static int __cdecl perform_tpdu_encryption(
         signed int *outputBufferLength,
         int allow_unencrypted) {
 
+    /* Capture apiHandle on first call */
+    if (!g_apiHandle && apiHandle) {
+        g_apiHandle = apiHandle;
+        log("[proto_send] captured apiHandle=%p\n", apiHandle);
+    }
+
     uint8_t *encryption_mode_addr = (uint8_t *) apiHandle + 0x84;
     if (log_crypto) {
         log("ENCRYPT - START\n");
@@ -183,8 +203,44 @@ static const CallHookEntry log_hooks[] = {
 
 // --- install ---
 
+/*
+ * Send raw TDR packet data through the TPDU encryption + send pipeline.
+ * data = TDR packet (starting with CMD BE uint16, then header, then body)
+ * len = total byte length
+ *
+ * Returns 0 on success, <0 on error.
+ */
+int protocalhandler_send_raw(void *data, int len) {
+    if (!org_perform_tpdu_encryption || !g_apiHandle) {
+        log("[proto_send] not ready (encrypt=%p apiHandle=%p)\n",
+            org_perform_tpdu_encryption, g_apiHandle);
+        return -1;
+    }
+
+    /* Build TPDU frame: [4B seq=0] + [TDR data] */
+    int frame_len = 4 + len;
+    uint8_t *frame = (uint8_t *)malloc(frame_len);
+    if (!frame) return -2;
+    memset(frame, 0, 4);  /* seq = 0 (server assigns real seq) */
+    memcpy(frame + 4, data, len);
+
+    void *out_buf = NULL;
+    signed int out_len = 0;
+
+    int ret = org_perform_tpdu_encryption(g_apiHandle, frame, frame_len,
+                                          &out_buf, &out_len, 0);
+    log("[proto_send] encrypt ret=%d out=%p out_len=%d\n", ret, out_buf, out_len);
+
+    free(frame);
+    /* Note: encryption produces the output but we can't socket-send from here.
+     * The encrypted buffer is managed by protocalhandler internally.
+     * For now this validates the path works — full send needs the connection object. */
+    return ret;
+}
+
 void install_protocalhandler_hooks() {
     DWORD base = wait_for_module("protocalhandler");
+    g_proto_base = base;
     log("got protocalhandler: %p \n", (void*)base);
 
     org_protocalhandler_log = (fn_protocalhandler_log)(base + 0x1703);

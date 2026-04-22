@@ -1160,7 +1160,6 @@ static void on_tersafe_slot30(HookContext *ctx) {
     DWORD *stk = hook_stack(ctx);
     DWORD ret_addr = stk[0];
     DWORD pkt = stk[1];
-    /* Only read safe offsets — 0x10034C is too deep and might fault */
     DWORD conn = 0;
     if (self && !IsBadReadPtr((void*)(self + 0xC), 4)) {
         conn = *(DWORD *)(self + 0xC);
@@ -1171,6 +1170,19 @@ static void on_tersafe_slot30(HookContext *ctx) {
     }
     log("[ts:slot30] this=%p conn=%p pkt=%p cmd=0x%X caller=0x%X\n",
         (void*)self, (void*)conn, (void*)pkt, cmd, ret_addr);
+
+    /* One-shot dump of CTerSafeProxy+0x90..+0xDF to see the +0xAC region */
+    static int dumped_ac = 0;
+    if (!dumped_ac && cmd == 0x504 && self && !IsBadReadPtr((void*)(self + 0x90), 0x50)) {
+        dumped_ac = 1;
+        uint32_t *d = (uint32_t *)(self + 0x90);
+        log("[ts:proxy +0x90..+0xDF]");
+        for (int i = 0; i < 20; i++) {
+            if ((i % 8) == 0) log("\n  +0x%02X:", 0x90 + i * 4);
+            log(" %08X", d[i]);
+        }
+        log("\n");
+    }
 }
 static const uint8_t tersafe_slot30_stolen[] = {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF8};
 
