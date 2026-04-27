@@ -1,4 +1,5 @@
 #include "hooks_mhoclient.h"
+#include "hooks_mho_handlers.h"
 #include "log.h"
 #include "hook_table.h"
 #include "ag_ini.h"
@@ -82,7 +83,6 @@ void install_mhoclient_hooks(DWORD mhoclient_base) {
     log("mhoclient_base: 0x%08X \n", mhoclient_base);
 
     std::wstring ini_path = get_exe_dir() + L"ag_mho.ini";
-    ag_ini_create_if_missing(ini_path, AG_MHO_INI_DEFAULTS);
     auto ag_cfg = ag_ini_read(ini_path);
     g_log_client_logs = ag_ini_get_int(ag_cfg, "log_client_logs", 0) != 0;
     log("config log_client_logs = %d \n", g_log_client_logs ? 1 : 0);
@@ -90,4 +90,6 @@ void install_mhoclient_hooks(DWORD mhoclient_base) {
     install_jmp_hooks(mhoclient_base, mhoclient_jmp_hooks, std::size(mhoclient_jmp_hooks));
     install_nop_patches(mhoclient_base, mhoclient_nops, std::size(mhoclient_nops));
     log("mhoclient hooks: client_log ENABLED\n");
+
+    install_mho_handler_hooks(mhoclient_base);
 }

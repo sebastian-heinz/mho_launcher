@@ -159,7 +159,7 @@ extern "C" void __cdecl tersafe_observer_before(int slot) {
     SlotState &s = g_slot[slot];
     const char *name = VT_NAMES[slot];
 
-    log("[TS:vt%d:%s] ENTRY this=0x%08X edx=0x%08X caller=0x%08X tid=%lu\n",
+    log("[TS:vt%d=%s] ENTRY this=0x%08X edx=0x%08X caller=0x%08X tid=%lu\n",
         slot, name, s.this_ptr, s.edx, s.caller, GetCurrentThreadId());
     log("  stack[0..7] = %08X %08X %08X %08X %08X %08X %08X %08X\n",
         s.args[0], s.args[1], s.args[2], s.args[3],
@@ -203,7 +203,7 @@ extern "C" void __cdecl tersafe_observer_after(int slot) {
     int32_t delta = (int32_t)(s.esp_after - s.esp_before);
     int     n_args_inferred = (delta >= 0) ? (delta / 4) : -1;
 
-    log("[TS:vt%d:%s] RETURN retval=0x%08X (%d)  esp_delta=%d bytes => %d stack arg(s) [thiscall/stdcall]\n",
+    log("[TS:vt%d=%s] RETURN retval=0x%08X (%d)  esp_delta=%d bytes => %d stack arg(s) [thiscall/stdcall]\n",
         slot, name, s.retval, (int32_t)s.retval, delta, n_args_inferred);
 
     /* Diff `this`. */
@@ -342,7 +342,7 @@ static void install_tersafe_vtable_patches(HMODULE hts) {
         log("[TS] CreateObj -> %p  vtable=%p\n", g_tersafe_obj, vtable);
         for (int i = 0; i < NUM_SLOTS; i++) {
             g_real_vt[i] = vtable[i];
-            log("[TS]   vt[%d:%s] = %p\n", i, VT_NAMES[i], vtable[i]);
+            log("[TS]   vt[%d=%s] = %p\n", i, VT_NAMES[i], vtable[i]);
         }
 
         /* ---- Sub-object probe ---------------------------------------------
@@ -444,7 +444,7 @@ static void install_tersafe_vtable_patches(HMODULE hts) {
             w8(0xC3);
 
             vtable[slot] = (void *)tramp;
-            log("[TS] vt[%d:%s] -> tramp %p (size=%ld)  real=%p\n",
+            log("[TS] vt[%d=%s] -> tramp %p (size=%ld)  real=%p\n",
                 slot, VT_NAMES[slot], tramp, (long)(p - tramp), g_real_vt[slot]);
         }
 

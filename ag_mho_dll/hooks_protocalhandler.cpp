@@ -58,14 +58,14 @@ static void __cdecl protocalhandler_log(
 
     std::string log_text = ws_2_s(w_log_text);
     delete[] w_str_fmt;
-    log("protocalhandler_log:%s\n", log_text.c_str());
+    log("protocalhandler_log=%s\n", log_text.c_str());
 }
 
 static int __cdecl aes_key_expansion(
         void *key,
         unsigned int key_len_bits,
         void *expanded_key) {
-    log("aes_key_expansion (bits:%d)\n", key_len_bits);
+    log("aes_key_expansion (bits=%d)\n", key_len_bits);
 
     unsigned int key_len_bytes = key_len_bits / 8;
     show((uint8_t *) key, key_len_bytes);
@@ -98,10 +98,22 @@ static int __cdecl perform_tpdu_decryption(
                                           outputBuffer, outputBufferLength,
                                           is_TPDU_CMD_PLAIN, allow_unencrypted_packets);
 
+    // Universal one-line summary per inbound packet — always on, low volume.
+    // After decrypt, the output buffer starts with the CS application packet:
+    // u16 cmd_id (big-endian on the wire? — confirm by reading both byte orders).
+    if (ret == 0 && outputBuffer && *outputBuffer && *outputBufferLength >= 4) {
+        const uint8_t *out = (const uint8_t *)*outputBuffer;
+        uint16_t cmd_le = (uint16_t)out[0] | ((uint16_t)out[1] << 8);
+        uint16_t cmd_be = ((uint16_t)out[0] << 8) | (uint16_t)out[1];
+        log("[PktRecv] cmd_le=%u(0x%X) cmd_be=%u(0x%X) len=%u apihdl=%p tid=%lu\n",
+            cmd_le, cmd_le, cmd_be, cmd_be,
+            (unsigned)*outputBufferLength, apiHandle, GetCurrentThreadId());
+    }
+
     if (log_crypto) {
         void *out = *outputBuffer;
         signed int outlen = *outputBufferLength;
-        log("DECRYPT - Return: Dec:%d Hex:0x%08X\n", ret, ret);
+        log("DECRYPT - Return: Dec=%d Hex:0x%08X\n", ret, ret);
         log("DECRYPT - Output Buffer\n");
         show((uint8_t *) out, outlen);
         log("DECRYPT - END\n");
@@ -132,6 +144,17 @@ static int __cdecl perform_tpdu_encryption(
         log("ENCRYPT - encryption_mode_addr: %d\n", *encryption_mode_addr);
     }
 
+    // Universal one-line summary per outbound packet — captures CMDs the
+    // client sends to the server (matches inbound [PktRecv] in format).
+    if (inputBuffer && inputBufferLength >= 4) {
+        const uint8_t *in = (const uint8_t *)inputBuffer;
+        uint16_t cmd_le = (uint16_t)in[0] | ((uint16_t)in[1] << 8);
+        uint16_t cmd_be = ((uint16_t)in[0] << 8) | (uint16_t)in[1];
+        log("[PktSend] cmd_le=%u(0x%X) cmd_be=%u(0x%X) len=%u apihdl=%p tid=%lu\n",
+            cmd_le, cmd_le, cmd_be, cmd_be,
+            (unsigned)inputBufferLength, apiHandle, GetCurrentThreadId());
+    }
+
     int ret = org_perform_tpdu_encryption(apiHandle, inputBuffer, inputBufferLength,
                                           outputBuffer, outputBufferLength,
                                           allow_unencrypted);
@@ -139,7 +162,7 @@ static int __cdecl perform_tpdu_encryption(
     if (log_crypto) {
         void *out = *outputBuffer;
         signed int outlen = *outputBufferLength;
-        log("ENCRYPT - Return: Dec:%d Hex:0x%08X\n", ret, ret);
+        log("ENCRYPT - Return: Dec=%d Hex:0x%08X\n", ret, ret);
         log("ENCRYPT - Output Buffer\n");
         show((uint8_t *) out, outlen);
         log("ENCRYPT - END\n");
@@ -246,7 +269,6 @@ void install_protocalhandler_hooks() {
     log("got protocalhandler: %p \n", (void*)base);
 
     std::wstring ini_path = get_exe_dir() + L"ag_mho.ini";
-    ag_ini_create_if_missing(ini_path, AG_MHO_INI_DEFAULTS);
     auto ag_cfg = ag_ini_read(ini_path);
     log_crypto = ag_ini_get_int(ag_cfg, "log_encrypted_network", 0) != 0;
     log("config log_encrypted_network = %d \n", log_crypto ? 1 : 0);

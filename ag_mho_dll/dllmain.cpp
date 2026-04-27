@@ -1,5 +1,6 @@
 #include "dll_export.h"
 #include "log.h"
+#include "hooks_ods.h"
 #include "hooks_mhoclient.h"
 #include "hooks_crygame.h"
 #include "hooks_protocalhandler.h"
@@ -13,6 +14,7 @@
 #include "str_util.h"
 #include "win_util.h"
 #include "shared_memory.h"
+#include "ag_ini.h"
 
 #include <windows.h>
 #include <thread>
@@ -57,6 +59,13 @@ static void run() {
     log_init();
     CreateConsole();
     log("run\n");
+
+    std::wstring ini_path = get_exe_dir() + L"ag_mho.ini";
+    if (ag_ini_create_if_missing(ini_path, AG_MHO_INI_DEFAULTS)) {
+        log("Created default config: %s\n", ws_2_s(ini_path).c_str());
+    }
+
+    install_ods_hooks();
 
     TenProxyTclsSharedMeMemory tptsmm;
     tptsmm.map(0);

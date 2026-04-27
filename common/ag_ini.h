@@ -59,6 +59,12 @@ static const char AG_MHO_INI_DEFAULTS[] =
     "log_client_logs = 0\n"
     "\n"
     "# Log encrypted network traffic (TPDU encrypt/decrypt input + output buffers) in protocalhandler (0 = disabled, 1 = enabled)\n"
-    "log_encrypted_network = 0\n";
+    "log_encrypted_network = 0\n"
+    "\n"
+    "# Install TerSafe proxy observation hooks in CryGame (tersafe vt1/vt3/slot30 wrappers + pre_dispatch). Noisy. (0 = disabled, 1 = enabled)\n"
+    "hook_tersafe = 0\n"
+    "\n"
+    "# Inject haunt.dll into MHOClient.exe (0 = disabled, 1 = enabled)\n"
+    "inject_haunt = 0\n";
 
 #endif

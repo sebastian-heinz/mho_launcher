@@ -21,7 +21,10 @@ set_target_properties(ag_mho_exe PROPERTIES OUTPUT_NAME "ag_mho")
 add_library(ag_mho_dll SHARED
     ag_mho_dll/dllmain.cpp
     ag_mho_dll/log.cpp
+    ag_mho_dll/hooks_ods.cpp
+    ag_mho_dll/backtrace_util.cpp
     ag_mho_dll/hooks_mhoclient.cpp
+    ag_mho_dll/hooks_mho_handlers.cpp
     ag_mho_dll/hooks_crygame.cpp
     ag_mho_dll/hooks_protocalhandler.cpp
     ag_mho_dll/hooks_tenproxy.cpp

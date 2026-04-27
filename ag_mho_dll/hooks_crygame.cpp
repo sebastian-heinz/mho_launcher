@@ -2,6 +2,8 @@
 #include "hooks_mhoclient.h"  // server_url_address
 #include "log.h"
 #include "hook_table.h"
+#include "ag_ini.h"
+#include "win_util.h"
 
 #include "mho_types.h"
 #include "cs_cmd.h"
@@ -11,8 +13,14 @@
 #include <cstring>
 #include <string>
 
-// CryGame.dll base address — set during install_crygame_hooks
+// Module bases — set during install_crygame_hooks for backtrace formatting.
 static DWORD crygame_base = 0;
+static DWORD mhoclient_base_bt = 0;
+static DWORD tenproxy_base_bt = 0;
+static DWORD protocal_base_bt = 0;
+static DWORD msvcr120_base_bt = 0;
+static DWORD ntdll_base_bt = 0;
+static DWORD kernel32_base_bt = 0;
 
 // Key global offsets (relative to CryGame.dll base = 0x10000000)
 static constexpr DWORD OFF_DAT_12387c6c         = 0x2387c6c;  // CStaticDataEnv pointer
@@ -149,6 +157,75 @@ static DWORD relative_cry_offset(uint32_t address) {
     return address - crygame_base;
 }
 
+// Format an address as "<module>+0x<offset>" into `buf`, picking whichever
+// module base it lies closest to. If it's outside all known ranges we just
+// print the raw address. Buffer should be ≥32 bytes.
+static void format_module_offset(uint32_t addr, char *buf, size_t buf_sz) {
+    struct M { const char *name; DWORD base; DWORD span; };
+    static const DWORD SPAN_BIG   = 0x02000000;  // for CryGame / MHOClient (big images)
+    static const DWORD SPAN_SMALL = 0x00400000;  // for tenproxy / protocalhandler / CRT / ntdll
+    M modules[] = {
+        {"cry",   crygame_base,      SPAN_BIG  },
+        {"mho",   mhoclient_base_bt, SPAN_BIG  },
+        {"tp",    tenproxy_base_bt,  SPAN_SMALL},
+        {"ph",    protocal_base_bt,  SPAN_SMALL},
+        {"msvcr", msvcr120_base_bt,  SPAN_SMALL},
+        {"ntdll", ntdll_base_bt,     SPAN_SMALL},
+        {"k32",   kernel32_base_bt,  SPAN_SMALL},
+    };
+    for (size_t i = 0; i < sizeof(modules) / sizeof(modules[0]); i++) {
+        M &m = modules[i];
+        if ((m.base != 0) && (addr >= m.base) && (addr < m.base + m.span)) {
+            snprintf(buf, buf_sz, "%s+0x%X", m.name, addr - m.base);
+            return;
+        }
+    }
+    snprintf(buf, buf_sz, "?+0x%X", addr);
+}
+
+// Refresh module bases — tenproxy.dll and protocalhandler.dll load AFTER
+// install_crygame_hooks runs, so their bases were 0 at install time. Called at
+// the start of every backtrace so addresses in those modules get formatted
+// with the right prefix once they're loaded.
+static void refresh_backtrace_modules() {
+    if (mhoclient_base_bt == 0) mhoclient_base_bt = (DWORD)GetModuleHandleA("MHOClient.exe");
+    if (tenproxy_base_bt  == 0) tenproxy_base_bt  = (DWORD)GetModuleHandleA("tenproxy.dll");
+    if (protocal_base_bt  == 0) protocal_base_bt  = (DWORD)GetModuleHandleA("protocalhandler.dll");
+    if (msvcr120_base_bt  == 0) msvcr120_base_bt  = (DWORD)GetModuleHandleA("MSVCR120.dll");
+    if (ntdll_base_bt     == 0) ntdll_base_bt     = (DWORD)GetModuleHandleA("ntdll.dll");
+    if (kernel32_base_bt  == 0) kernel32_base_bt  = (DWORD)GetModuleHandleA("kernel32.dll");
+}
+
+// Walks the `ebp` frame-pointer chain starting from ctx->ebp and logs up to
+// `max_depth` upstream frames. Stops early if we hit unreadable memory, a
+// monotonic break (ebp doesn't grow), or a return address that doesn't look
+// like executable code. Works only when callees preserve frame pointers; any
+// frame compiled with -fomit-frame-pointer breaks the chain beyond that point
+// — we detect via sanity checks and stop.
+static void log_backtrace(HookContext *ctx, const char *tag, int max_depth) {
+    refresh_backtrace_modules();
+    char fmt[48];
+    DWORD *stk = hook_stack(ctx);
+    uint32_t ret0 = stk[0];
+    format_module_offset(ret0, fmt, sizeof(fmt));
+    log("[%s.bt] f0 ret=%p %s\n", tag, (void *)ret0, fmt);
+
+    uint32_t ebp = ctx->ebp;
+    for (int i = 1; i <= max_depth; i++) {
+        // Sanity: ebp must look like a user-space stack pointer.
+        if ((ebp < 0x10000) || (ebp > 0xC0000000)) break;
+        uint32_t saved_ebp = 0, saved_ret = 0;
+        if (!safe_read_value(ebp, &saved_ebp))     break;
+        if (!safe_read_value(ebp + 4, &saved_ret)) break;
+        if (saved_ret < 0x10000) break;  // not a plausible code address
+        format_module_offset(saved_ret, fmt, sizeof(fmt));
+        log("[%s.bt] f%d ret=%p %s\n", tag, i, (void *)saved_ret, fmt);
+        // Next-frame ebp must strictly grow upward; otherwise FPO or garbage.
+        if ((saved_ebp <= ebp) || (saved_ebp > 0xC0000000)) break;
+        ebp = saved_ebp;
+    }
+}
+
 static const char *classify_spawn_caller(uint32_t return_address) {
     DWORD rel = relative_cry_offset(return_address);
     if ((rel >= OFF_CMD_714_HANDLER) && (rel < OFF_CMD_714_HANDLER + 0x400)) {
@@ -212,7 +289,7 @@ static void log_runtime_globals(const char *tag) {
         safe_read_value(gr_ptr + 0x78, &gr_78);
     }
 
-    log("[%s] globals env:%p flag:%u CMonsterInfo:%p BG:%p GR:%p GR+78:%p\n",
+    log("[%s] globals env=%p flag=%u CMonsterInfo=%p BG=%p GR=%p GR+78=%p\n",
         tag,
         (void *)static_env,
         env_flag,
@@ -232,7 +309,7 @@ static void log_game_logic_state(const char *tag, uint32_t this_ptr) {
     bool have_battle_78 = (owner >= 0x10000) && safe_read_value(owner + 0x78, &battle_78);
     bool have_owner_90 = (owner >= 0x10000) && safe_read_value(owner + 0x90, &owner_90);
 
-    log("[%s] this:%p this+0xc:%p owner_vft:%p +0x78:%p +0x90:%p ok(owner:%d vft:%d 78:%d 90:%d)\n",
+    log("[%s] this=%p this+0xc=%p owner_vft=%p +0x78=%p +0x90=%p ok(owner=%d vft=%d 78=%d 90=%d)\n",
         tag,
         (void *)this_ptr,
         (void *)owner,
@@ -249,11 +326,11 @@ static void log_packet_preview(const char *tag, uint32_t packet_ptr) {
     uint8_t preview[16] = {};
     bool ok = safe_read_bytes(packet_ptr, preview, sizeof(preview));
     if (!ok) {
-        log("[%s] packet:%p preview:unreadable\n", tag, (void *)packet_ptr);
+        log("[%s] packet=%p preview:unreadable\n", tag, (void *)packet_ptr);
         return;
     }
 
-    log("[%s] packet:%p bytes:%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
+    log("[%s] packet=%p bytes=%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
         tag,
         (void *)packet_ptr,
         preview[0], preview[1], preview[2], preview[3],
@@ -272,7 +349,7 @@ static void log_protocol_handler_state(const char *tag, uint32_t this_ptr) {
     bool have_owner = safe_read_value(this_ptr + 0x04, &owner);
     bool have_callback = safe_read_value(this_ptr + 0x08, &callback);
 
-    log("[%s] proto_handler this:%p this+4(owner):%p this+8(callback):%p ok(owner:%d callback:%d)\n",
+    log("[%s] proto_handler this=%p this+4(owner):%p this+8(callback):%p ok(owner=%d callback=%d)\n",
         tag,
         (void *)this_ptr,
         (void *)owner,
@@ -285,11 +362,11 @@ static void log_handler_definition_snapshot(const char *tag, uint32_t handler_de
     HandlerCallbackDefintion handler_def{};
     bool ok = safe_read_bytes(handler_def_ptr, &handler_def, sizeof(handler_def));
     if (!ok) {
-        log("[%s] def:%p snapshot:unreadable\n", tag, (void *)handler_def_ptr);
+        log("[%s] def=%p snapshot:unreadable\n", tag, (void *)handler_def_ptr);
         return;
     }
 
-    log("[%s] def:%p vft:%p mgr:%p fn:%p unk:%u\n",
+    log("[%s] def=%p vft=%p mgr=%p fn=%p unk=%u\n",
         tag,
         (void *)handler_def_ptr,
         (void *)handler_def.vftable_ptr,
@@ -392,7 +469,7 @@ static void log_monster_appear_entry(const char *tag, const uint8_t *entry, bool
     uint8_t lcm_set_pos = read_unaligned<uint8_t>(entry + OFF_LCM_SET_POS);
     uint8_t lcm_need_move_speed_acc = read_unaligned<uint8_t>(entry + OFF_LCM_NEED_MOVE_SPEED_ACC);
 
-    log("[%s] entry NetId:%d SpawnType:%d MonsterInfoId:%d Name:%.32s Class:%.32s Scale:%.2f Dead:%u\n",
+    log("[%s] entry NetId=%d SpawnType=%d MonsterInfoId=%d Name=%.32s Class=%.32s Scale=%.2f Dead=%u\n",
         tag,
         net_id,
         (int)spawn_type,
@@ -401,7 +478,7 @@ static void log_monster_appear_entry(const char *tag, const uint8_t *entry, bool
         reinterpret_cast<const char *>(entry + 0x32),
         scale,
         (unsigned)dead_flag);
-    log("[%s] pose t:(%.2f,%.2f,%.2f) q:(%.2f,%.2f,%.2f,%.2f) faction:%d BTState:%.32s ParentGuid:%llu LastChild:%d\n",
+    log("[%s] pose t=(%.2f,%.2f,%.2f) q=(%.2f,%.2f,%.2f,%.2f) faction=%d BTState=%.32s ParentGuid=%llu LastChild=%d\n",
         tag,
         pose_x, pose_y, pose_z,
         pose_qx, pose_qy, pose_qz, pose_qw,
@@ -409,7 +486,7 @@ static void log_monster_appear_entry(const char *tag, const uint8_t *entry, bool
         reinterpret_cast<const char *>(entry + OFF_APPEAR_BTSTATE),
         static_cast<unsigned long long>(parent_guid),
         last_child_id);
-    log("[%s] lcm id:%u sync:%lld anim:%.32s skill:%d/%d target:%u flag:%u move:(%.2f,%.2f,%.2f) pos:(%.2f,%.2f,%.2f) rot:(%.2f,%.2f,%.2f,%.2f) speed:%.2f restart:%u atkNum:%d setRot:%u setPos:%u accel:%u\n",
+    log("[%s] lcm id=%u sync=%lld anim=%.32s skill=%d/%d target=%u flag=%u move=(%.2f,%.2f,%.2f) pos=(%.2f,%.2f,%.2f) rot=(%.2f,%.2f,%.2f,%.2f) speed=%.2f restart=%u atkNum=%d setRot=%u setPos=%u accel=%u\n",
         tag,
         lcm_monster_id,
         lcm_sync_time,
@@ -432,7 +509,7 @@ static void log_monster_appear_entry(const char *tag, const uint8_t *entry, bool
         int32_t owner_id = read_unaligned<int32_t>(entry + 0x42EB);
         int32_t control_type = read_unaligned<int32_t>(entry + 0x42EF);
         float duration = read_unaligned<float>(entry + 0x42F3);
-        log("[%s] controlled OwnerId:%d Type:%d Duration:%.2f\n",
+        log("[%s] controlled OwnerId=%d Type=%d Duration=%.2f\n",
             tag,
             owner_id,
             control_type,
@@ -454,7 +531,7 @@ static void log_entity_monster_info(const char *tag, uint32_t entity_ptr, uint32
     bool have_type = (info_ptr >= 0x10000) && safe_read_value(info_ptr + OFF_MONSTER_INFO_TYPE, &monster_type);
     bool is_default_info = info_ptr == (crygame_base + OFF_DAT_12387f48);
 
-    log("[%s] caller:%s ret:%p cry+0x%08X entity:%p evft:%p e+4:%u info:%p ivft:%p type:%d ok(evft:%d e+4:%d info:%d ivft:%d type:%d) default:%d\n",
+    log("[%s] caller=%s ret=%p cry+0x%08X entity=%p evft=%p e+4=%u info=%p ivft=%p type=%d ok(evft=%d e+4=%d info=%d ivft=%d type=%d) default=%d\n",
         tag,
         classify_spawn_caller(return_address),
         (void *)return_address,
@@ -483,7 +560,7 @@ static void log_set_monster_info(const char *tag, uint32_t entity_ptr, uint32_t 
     bool have_type = (info_ptr >= 0x10000) && safe_read_value(info_ptr + OFF_MONSTER_INFO_TYPE, &monster_type);
     bool is_default_info = info_ptr == (crygame_base + OFF_DAT_12387f48);
 
-    log("[%s] caller:%s ret:%p cry+0x%08X entity:%p evft:%p info_arg:%p ivft:%p type:%d ok(evft:%d ivft:%d type:%d) default:%d\n",
+    log("[%s] caller=%s ret=%p cry+0x%08X entity=%p evft=%p info_arg=%p ivft=%p type=%d ok(evft=%d ivft=%d type=%d) default=%d\n",
         tag,
         classify_spawn_caller(return_address),
         (void *)return_address,
@@ -514,7 +591,7 @@ static void register_handler(uint32_t packet_id, HandlerCallbackDefintion *handl
         HandlerCallbackDefintion snapshot{};
         bool ok = safe_read_bytes(reinterpret_cast<uint32_t>(handler_definition), &snapshot, sizeof(snapshot));
         if (ok) {
-            log("register_handler CMD:%u %s ret:%p cry+0x%08X ecx:%p def:%p vft:%p mgr:%p fn:%p unk:%u\n",
+            log("register_handler CMD=%u %s ret=%p cry+0x%08X ecx=%p def=%p vft=%p mgr=%p fn=%p unk=%u\n",
                 packet_id,
                 cmd_name(packet_id),
                 (void *)return_address,
@@ -526,7 +603,7 @@ static void register_handler(uint32_t packet_id, HandlerCallbackDefintion *handl
                 snapshot.handler_callback_function_ptr,
                 snapshot.unknown_field);
         } else {
-            log("register_handler CMD:%u %s ret:%p cry+0x%08X ecx:%p def:%p snapshot:unreadable\n",
+            log("register_handler CMD=%u %s ret=%p cry+0x%08X ecx=%p def=%p snapshot:unreadable\n",
                 packet_id,
                 cmd_name(packet_id),
                 (void *)return_address,
@@ -535,7 +612,7 @@ static void register_handler(uint32_t packet_id, HandlerCallbackDefintion *handl
                 handler_definition);
         }
     } else {
-        log("register_handler CMD:%u %s ret:%p cry+0x%08X ecx:%p def:NULL\n",
+        log("register_handler CMD=%u %s ret=%p cry+0x%08X ecx=%p def:NULL\n",
             packet_id,
             cmd_name(packet_id),
             (void *)return_address,
@@ -550,7 +627,7 @@ static void call_handler(void *call_fn, HandlerCallbackDefintion *handler_defini
         HandlerCallbackDefintion snapshot{};
         bool ok = safe_read_bytes(reinterpret_cast<uint32_t>(handler_definition), &snapshot, sizeof(snapshot));
         if (ok) {
-            log("call_handler CMD:%u %s def:%p vft:%p mgr:%p fn:%p unk:%u call_fn:%p packet:%p\n",
+            log("call_handler CMD=%u %s def=%p vft=%p mgr=%p fn=%p unk=%u call_fn=%p packet=%p\n",
                 packet_id,
                 cmd_name(packet_id),
                 handler_definition,
@@ -561,7 +638,7 @@ static void call_handler(void *call_fn, HandlerCallbackDefintion *handler_defini
                 call_fn,
                 packet_data);
         } else {
-            log("call_handler CMD:%u %s def:%p snapshot:unreadable call_fn:%p packet:%p\n",
+            log("call_handler CMD=%u %s def=%p snapshot:unreadable call_fn=%p packet=%p\n",
                 packet_id,
                 cmd_name(packet_id),
                 handler_definition,
@@ -569,7 +646,7 @@ static void call_handler(void *call_fn, HandlerCallbackDefintion *handler_defini
                 packet_data);
         }
     } else {
-        log("call_handler CMD:%u %s call_fn:%p packet:%p\n",
+        log("call_handler CMD=%u %s call_fn=%p packet=%p\n",
             packet_id,
             cmd_name(packet_id),
             call_fn,
@@ -586,7 +663,7 @@ static void log_handle_notification(char *event_cstr, InternalEventNotification 
     } else if (event.find("handleGameNotification") != std::string::npos) {
         notification_type = GetMHGameEventIDName(static_cast<MHGameEventID>(notif->notification_id));
     }
-    log("log_handle_logic_or_game_event_notification(event:%s, notification_id:%u (type: %s), unk_group_idx: %u)\n",
+    log("log_handle_logic_or_game_event_notification(event=%s, notification_id=%u (type: %s), unk_group_idx: %u)\n",
         event_cstr, notif->notification_id, notification_type.c_str(), unk_group_index);
 }
 
@@ -613,7 +690,7 @@ static void on_protocol_handler_recv_msg(HookContext *ctx) {
         return;
     }
 
-    log("[OnRecvMsg] ret:%p ecx:%p packet:%p body:%p cmd:%u %s\n",
+    log("[OnRecvMsg] ret=%p ecx=%p packet=%p body=%p cmd=%u %s\n",
         (void *)stack[0],
         (void *)ctx->ecx,
         (void *)packet_ptr,
@@ -641,7 +718,7 @@ static void on_protocol_dispatch_entry(HookContext *ctx) {
     uint32_t node = 0;
     uint32_t handler_def = protocol_dispatch_find_handler(ctx->ecx, packet_id, &node);
 
-    log("[DispatchEntry] ret:%p ecx:%p arg1:%p packet:%p cmd:%u %s root:%p node:%p def:%p found:%d\n",
+    log("[DispatchEntry] ret=%p ecx=%p arg1=%p packet=%p cmd=%u %s root=%p node=%p def=%p found=%d\n",
         (void *)stack[0],
         (void *)ctx->ecx,
         (void *)stack[1],
@@ -658,11 +735,305 @@ static void on_protocol_dispatch_entry(HookContext *ctx) {
     }
 }
 
+// --- Path B runtime resolver ---------------------------------------------------
+// Given a CMD id, compute (dispatcher_stub_va, subscriber_list_offset) at runtime
+// by walking CryGame's compact jump tables. No hardcoded per-CMD table — every
+// CMD is automatically covered.
+//
+// CGameLogic::CmdDispatchSwitch @ crygame+0x65ede0 implements two ranges:
+//
+//   Range 1: 1         <= cmd <= 0x201
+//            selector @ crygame+0x6639ec  (0x10e bytes, one per cmd-1)
+//            jmptbl   @ crygame+0x6637b4  (dword entries)
+//
+//   Range 2: 0x202     <= cmd <= 0x501        (covers all battle/monster CMDs)
+//            selector @ crygame+0x663e3c  (0x208 bytes, one per cmd-0x202)
+//            jmptbl   @ crygame+0x663afc  (dword entries)
+//
+// Each jmptbl entry is a "thunk": `lea eax,[edx+0x10]; mov [ebp+8],eax; pop ebp;
+// jmp <dispatch_stub>`. The stub's prologue is always:
+//   push ebp; mov ebp,esp; push ebx; push esi;
+//   mov esi, [ecx + LIST_OFFSET];
+//   push edi; lea edi, [ecx + LIST_OFFSET];
+// We read LIST_OFFSET from the prologue.
+//
+// Note on registration hooks (Path B parity question): the per-list register
+// functions are NOT a single helper — there are ~280 separate register functions
+// (one per list offset, each doing its own intrusive insertion). Hooking all of
+// them is not practical. Instead we approximate registration visibility by
+// diffing the subscriber set across consecutive dispatches of the same CMD —
+// see `path_b_diff_*` below. Caveat: register/unregister cycles between two
+// consecutive dispatches of the same CMD are missed.
+
+static bool path_b_resolve(uint32_t cmd, uint32_t *stub_va_out, uint32_t *list_offset_out) {
+    if (crygame_base == 0) return false;
+    uint32_t cmd_lo, sel_va, jmp_va, sel_size;
+    if ((cmd >= 1) && (cmd <= 0x201)) {
+        cmd_lo = 1;
+        sel_va = crygame_base + 0x6639ec;
+        jmp_va = crygame_base + 0x6637b4;
+        sel_size = 0x10e;
+    } else if ((cmd >= 0x202) && (cmd <= 0x501)) {
+        cmd_lo = 0x202;
+        sel_va = crygame_base + 0x663e3c;
+        jmp_va = crygame_base + 0x663afc;
+        sel_size = 0x208;
+    } else {
+        return false;
+    }
+    uint32_t idx = cmd - cmd_lo;
+    if (idx >= sel_size) return false;
+    uint8_t sel = 0;
+    if (!safe_read_value(sel_va + idx, &sel)) return false;
+    uint32_t thunk = 0;
+    if (!safe_read_value(jmp_va + sel * 4, &thunk)) return false;
+    // Thunk prologue: 8D 42 10  89 45 08  5D  E9 <rel32>
+    uint8_t tb[12];
+    if (!safe_read_bytes(thunk, tb, 12)) return false;
+    if ((tb[0] != 0x8D) || (tb[1] != 0x42) || (tb[2] != 0x10)) return false;
+    if (tb[7] != 0xE9) return false;
+    int32_t rel = *(const int32_t *)(tb + 8);
+    uint32_t stub = thunk + 12 + rel;
+    // Stub prologue: 55 8B EC 53 56 8B B1 <disp32>
+    // The first 5 bytes may have been replaced by our own jmp hook (E9 rel32) for
+    // 641/648/651, but the `mov esi, [ecx+disp32]` opcode at offset 5 and its
+    // disp32 at offset 7 are preserved — those are what we need. So we skip the
+    // first-5-byte prologue check and only verify offsets 5, 6 and read disp at 7.
+    uint8_t sb[11];
+    if (!safe_read_bytes(stub, sb, 11)) {
+        return false;
+    }
+    if ((sb[5] != 0x8B) || (sb[6] != 0xB1)) {
+        return false;
+    }
+    uint32_t disp = *(const uint32_t *)(sb + 7);
+    if (stub_va_out) *stub_va_out = stub;
+    if (list_offset_out) *list_offset_out = disp;
+    return true;
+}
+
+// --- Path B subscriber-diff cache ----------------------------------------------
+// Remembers, per CMD, the node addresses seen last time this CMD was dispatched.
+// On each dispatch we diff and emit [PathB.reg]/[PathB.unreg] events.
+#define PATH_B_DIFF_CMDS 64
+#define PATH_B_DIFF_NODES 16
+struct PathBCmdState {
+    uint32_t cmd_id;          // 0 = empty slot
+    uint32_t nodes[PATH_B_DIFF_NODES];
+    int node_count;
+};
+static PathBCmdState path_b_diff_state[PATH_B_DIFF_CMDS] = {};
+
+static PathBCmdState *path_b_diff_slot(uint32_t cmd) {
+    int free_slot = -1;
+    for (int i = 0; i < PATH_B_DIFF_CMDS; i++) {
+        if (path_b_diff_state[i].cmd_id == cmd) return &path_b_diff_state[i];
+        if ((path_b_diff_state[i].cmd_id == 0) && (free_slot == -1)) free_slot = i;
+    }
+    if (free_slot >= 0) {
+        path_b_diff_state[free_slot].cmd_id = cmd;
+        path_b_diff_state[free_slot].node_count = 0;
+        return &path_b_diff_state[free_slot];
+    }
+    return nullptr;
+}
+
+static void path_b_diff_update(uint32_t cmd, const uint32_t *nodes, int n) {
+    PathBCmdState *s = path_b_diff_slot(cmd);
+    if (s == nullptr) return;
+    // New subscribers:
+    for (int i = 0; i < n; i++) {
+        bool was_there = false;
+        for (int j = 0; j < s->node_count; j++) {
+            if (s->nodes[j] == nodes[i]) { was_there = true; break; }
+        }
+        if (!was_there) {
+            log("[PathB.reg] cmd=%u %s node=%p NEW since last dispatch\n",
+                cmd, cmd_name(cmd), (void *)nodes[i]);
+        }
+    }
+    // Removed subscribers:
+    for (int j = 0; j < s->node_count; j++) {
+        bool still_there = false;
+        for (int i = 0; i < n; i++) {
+            if (nodes[i] == s->nodes[j]) { still_there = true; break; }
+        }
+        if (!still_there) {
+            log("[PathB.unreg] cmd=%u %s node=%p REMOVED since last dispatch\n",
+                cmd, cmd_name(cmd), (void *)s->nodes[j]);
+        }
+    }
+    // Update cache
+    int nn = (n < PATH_B_DIFF_NODES) ? n : PATH_B_DIFF_NODES;
+    s->node_count = nn;
+    for (int i = 0; i < nn; i++) s->nodes[i] = nodes[i];
+}
+
+// Walks the subscriber list, logs current contents, and runs a diff against
+// the last-seen set to emit registration/unregistration events.
+static void path_b_walk_and_diff(const char *tag, uint32_t cgamelogic,
+                                 uint32_t list_offset, uint32_t cmd_id) {
+    uint32_t head = cgamelogic + list_offset;
+    uint32_t first = 0;
+    if (!safe_read_value(head, &first)) {
+        log("[%s] cmd=%u %s this=%p head=%p head-unreadable\n",
+            tag, cmd_id, cmd_name(cmd_id), (void *)cgamelogic, (void *)head);
+        return;
+    }
+    uint32_t nodes[PATH_B_DIFF_NODES];
+    int count = 0;
+    if (first != head) {
+        uint32_t node = first;
+        while ((node != head) && (count < PATH_B_DIFF_NODES)) {
+            nodes[count++] = node;
+            uint32_t next = 0;
+            if (!safe_read_value(node, &next)) break;
+            node = next;
+        }
+    }
+    if (count == 0) {
+        log("[%s] cmd=%u %s this=%p head=%p subscribers:0\n",
+            tag, cmd_id, cmd_name(cmd_id), (void *)cgamelogic, (void *)head);
+    } else {
+        log("[%s] cmd=%u %s this=%p head=%p subscribers=%d\n",
+            tag, cmd_id, cmd_name(cmd_id), (void *)cgamelogic, (void *)head, count);
+        for (int i = 0; i < count; i++) {
+            uint32_t cb = 0;
+            safe_read_value(nodes[i] + 12, &cb);
+            DWORD off = relative_cry_offset(cb);
+            if (off != 0) {
+                log("  #%d node=%p cb=%p cry+0x%08X\n", i, (void *)nodes[i], (void *)cb, off);
+            } else {
+                log("  #%d node=%p cb=%p (non-crygame)\n", i, (void *)nodes[i], (void *)cb);
+            }
+        }
+    }
+    path_b_diff_update(cmd_id, nodes, count);
+}
+
+// CGameLogic::CmdDispatchSwitch @ crygame+0x65ede0 — Path B entry, giant switch(cmd_id).
+// Each case tail-calls a Dispatch_CMD_<id> stub that fans out to a subscriber list.
+// At hook entry, ecx = outer-this. The function immediately does `mov ecx, [ecx+0x3c]`
+// to obtain the inner CGameLogic whose subscriber lists live at fixed offsets.
+// Filtered to is_spawn_cmd() to avoid log flood.
+//
+// *** Automatic coverage ***: every CMD is resolved via `path_b_resolve` from the
+// compact jump tables, so we walk + diff the subscriber list without needing a
+// per-CMD hook or a manual table.
+static void on_cmd_dispatch_switch(HookContext *ctx) {
+    DWORD *stack = hook_stack(ctx);
+    uint32_t ret_addr = stack[0];
+    uint32_t packet_ptr = stack[1];
+    if (packet_ptr < 0x10000) {
+        return;
+    }
+    uint16_t packet_id = 0;
+    if (!safe_read_value(packet_ptr, &packet_id)) {
+        return;
+    }
+    if (!is_spawn_cmd(packet_id)) {
+        return;
+    }
+    uint32_t inner_this = 0;
+    safe_read_value(ctx->ecx + 0x3c, &inner_this);
+    uint32_t stub = 0;
+    uint32_t list_off = 0;
+    bool resolved = path_b_resolve(packet_id, &stub, &list_off);
+    log("[CmdDispSwitch] outer=%p inner=%p cmd=%u %s packet=%p ret=%p cry+0x%08X stub=%p list_off:0x%x\n",
+        (void *)ctx->ecx,
+        (void *)inner_this,
+        (unsigned)packet_id,
+        cmd_name(packet_id),
+        (void *)packet_ptr,
+        (void *)ret_addr,
+        relative_cry_offset(ret_addr),
+        resolved ? (void *)stub : (void *)0,
+        resolved ? list_off : 0u);
+    if (resolved && (inner_this != 0)) {
+        path_b_walk_and_diff("CmdDispSwitch.list", inner_this, list_off, packet_id);
+    }
+    // Caller-chain backtrace: walks the ebp frame pointer chain upstream to
+    // identify the recv/parse layer that delivered this packet to Path B.
+    log_backtrace(ctx, "CmdDispSwitch", 16);
+}
+
+// CGameLogic::Dispatch_CMD_641_MonsterLocomotion @ crygame+0x621040.
+// Confirms the stub itself was reached (vs CmdDispSwitch fired but case defaulted).
+// Uses the same walk-and-diff logic as on_cmd_dispatch_switch, sharing the diff
+// cache so we don't log "new subscriber" twice for the same actual register event.
+static void on_dispatch_cmd_641(HookContext *ctx) {
+    DWORD *stack = hook_stack(ctx);
+    log("[DispCmd641] enter this=%p ret=%p cry+0x%08X\n",
+        (void *)ctx->ecx, (void *)stack[0], relative_cry_offset(stack[0]));
+    path_b_walk_and_diff("DispCmd641", ctx->ecx, 0x570, 641);
+}
+
+static void on_dispatch_cmd_648(HookContext *ctx) {
+    DWORD *stack = hook_stack(ctx);
+    log("[DispCmd648] enter this=%p ret=%p cry+0x%08X\n",
+        (void *)ctx->ecx, (void *)stack[0], relative_cry_offset(stack[0]));
+    path_b_walk_and_diff("DispCmd648", ctx->ecx, 0x5e0, 648);
+}
+
+static void on_dispatch_cmd_651(HookContext *ctx) {
+    DWORD *stack = hook_stack(ctx);
+    log("[DispCmd651] enter this=%p ret=%p cry+0x%08X\n",
+        (void *)ctx->ecx, (void *)stack[0], relative_cry_offset(stack[0]));
+    path_b_walk_and_diff("DispCmd651", ctx->ecx, 0x5f8, 651);
+}
+
+// CBattleGround::BB_ReadSteeringProperties @ crygame+0xBA8B60 — Path C entry.
+// Handles battle-scoped CMDs before eventually tail-calling CmdDispatchSwitch.
+// At entry: ecx = this (CBattleGround), [ebp+8] = packet pointer.
+// Signature: void __thiscall(this, packet_ptr)
+static void on_bb_read_steering_properties(HookContext *ctx) {
+    DWORD *stk = hook_stack(ctx);
+    uint32_t packet_ptr = stk[1];
+    uint16_t cmd_id = 0;
+    if (packet_ptr >= 0x10000) {
+        safe_read_value(packet_ptr, &cmd_id);
+    }
+    log("[BBReadSteering] this=%p packet=%p cmd=%u %s ret=%p cry+0x%08X tid=%lu\n",
+        (void *)ctx->ecx, (void *)packet_ptr,
+        (unsigned)cmd_id, cmd_name(cmd_id),
+        (void *)stk[0], relative_cry_offset(stk[0]),
+        GetCurrentThreadId());
+}
+
+// Path C-1 hook — the vt[5] call inside BB_ReadSteeringProperties at
+// crygame+0xBA92CC. Intercepts 3 instructions: `mov eax,[ecx]; push ebx;
+// call [eax+0x14]`. At hook entry:
+//   ecx = sub-object pointer (= *(local_30+0x164)), loaded by prior mov
+//   ebx = packet pointer
+// We log the sub-object's vtable[5] target so we can classify what's at
+// that method (TerSafe pass-through vs real dispatcher). After our callback
+// and popad, the stolen bytes execute normally: reads vtable, pushes arg,
+// calls vt[5]. Then jmp back to 0xBA92D2 continues the function.
+static void on_path_c1_vt5_call(HookContext *ctx) {
+    uint32_t sub_obj = ctx->ecx;
+    uint32_t packet  = ctx->ebx;
+    uint32_t vtable = 0, target = 0;
+    if (sub_obj >= 0x10000) {
+        if (safe_read_value(sub_obj, &vtable)) {
+            if (vtable >= 0x10000) {
+                safe_read_value(vtable + 0x14, &target);
+            }
+        }
+    }
+    DWORD *stk = hook_stack(ctx);
+    log("[PathC1] sub_obj=%p vtable=%p vt[5]=%p cry+0x%08X packet=%p ret_after_call=%p tid=%lu\n",
+        (void *)sub_obj, (void *)vtable,
+        (void *)target, relative_cry_offset(target),
+        (void *)packet,
+        (void *)stk[0],
+        GetCurrentThreadId());
+}
+
 static void on_call_handler(HookContext *ctx) {
     // CProtocolDispatch::OnMessage: [ebp+0xC] = packet body ptr, first uint16 = CMD ID
     uint8_t *packet_data = *(uint8_t **)(ctx->ebp + 0xC);
     if (packet_data == nullptr) {
-        log("call_handler: packet_data NULL ecx:%p\n", (void *)ctx->ecx);
+        log("call_handler: packet_data NULL ecx=%p\n", (void *)ctx->ecx);
         return;
     }
 
@@ -691,7 +1062,7 @@ static void on_call_handler(HookContext *ctx) {
     }
 
     if (is_spawn_cmd(packet_id)) {
-        log("call_handler_detail CMD:%u %s ecx:%p fields:[%p %p %p %p] ok:[%d %d %d %d] slot0:%p packet:%p\n",
+        log("call_handler_detail CMD=%u %s ecx=%p fields:[%p %p %p %p] ok:[%d %d %d %d] slot0=%p packet=%p\n",
             packet_id,
             cmd_name(packet_id),
             (void *)ctx->ecx,
@@ -711,7 +1082,7 @@ static void on_call_handler(HookContext *ctx) {
     {
         uint32_t *pd = (uint32_t *)packet_data;
         int dump_len = 32;
-        log("call_handler CMD:%u %s def:%p vft:%p mgr:%p fn:%p unk:%u call_fn:%p packet:%p\n",
+        log("call_handler CMD=%u %s def=%p vft=%p mgr=%p fn=%p unk=%u call_fn=%p packet=%p\n",
             packet_id, cmd_name(packet_id),
             (void *)field0, (void *)field1, (void *)field2, (void *)field3,
             ok3, call_fn, packet_data);
@@ -730,7 +1101,7 @@ static void on_monster_appear_single(HookContext *ctx) {
     int32_t count = -1;
     bool have_count = safe_read_value((uint32_t)param_4, &count);
 
-    log("[CMD662] ENTER ret:%p session:%p cmd:%u param4:%p count:%d ok_count:%d\n",
+    log("[CMD662] ENTER ret=%p session=%p cmd=%u param4=%p count=%d ok_count=%d\n",
         (void *)stack[0],
         (void *)stack[1],
         stack[2],
@@ -751,7 +1122,7 @@ static void on_monster_appear_list(HookContext *ctx) {
     int32_t count = -1;
     bool have_count = safe_read_value((uint32_t)param_4, &count);
 
-    log("[CMD663] ENTER ret:%p session:%p cmd:%u param4:%p count:%d ok_count:%d\n",
+    log("[CMD663] ENTER ret=%p session=%p cmd=%u param4=%p count=%d ok_count=%d\n",
         (void *)stack[0],
         (void *)stack[1],
         stack[2],
@@ -770,7 +1141,7 @@ static void on_controlled_monster_appear(HookContext *ctx) {
     DWORD *stack = hook_stack(ctx);
     uint8_t *param_4 = (uint8_t *)stack[3];
 
-    log("[CMD714] ENTER ret:%p session:%p cmd:%u param4:%p\n",
+    log("[CMD714] ENTER ret=%p session=%p cmd=%u param4=%p\n",
         (void *)stack[0],
         (void *)stack[1],
         stack[2],
@@ -792,7 +1163,7 @@ static void on_spawn_monsters(HookContext *ctx) {
         count = read_unaligned<int32_t>(data);
     }
 
-    log("[SpawnMonsters] ENTER ret:%p caller:%s session:%p cmd:%u data:%p count:%d\n",
+    log("[SpawnMonsters] ENTER ret=%p caller=%s session=%p cmd=%u data=%p count=%d\n",
         (void *)stack[0],
         classify_spawn_caller(stack[0]),
         (void *)stack[1],
@@ -862,13 +1233,44 @@ static void on_init_from_appear(HookContext *ctx) {
         return;
     }
 
-    log("[InitFromAppear] ret:%p entity:%p e+4:%u packet:%p packetNetId:%u\n",
+    log("[InitFromAppear] ret=%p entity=%p e+4=%u packet=%p packetNetId=%u\n",
         (void *)stack[0],
         (void *)ctx->ecx,
         entity_net_id,
         (void *)packet_ptr,
         packet_net_id);
     log_monster_appear_entry("InitFromAppear", reinterpret_cast<const uint8_t *>(packet_ptr), false);
+}
+
+// CBuffBase::SetPosition @ crygame+0x146B830. Vtable[8] of CCliLogicMonster (and
+// many other entity types) — writes the 12-byte position vec3 to this+0x68/+0x6c/+0x70.
+// We hook this to find who calls it for the active battle monster on each CMD 641.
+//
+// Filter: only log when `this` is a CCliLogicMonster instance (vtable 0x11d1f298).
+// That keeps the noise down — players, projectiles, scene objects all share this
+// SetPosition implementation through inheritance.
+static void on_set_position(HookContext *ctx) {
+    uint32_t this_ptr = (uint32_t)ctx->ecx;
+    uint32_t vtable = 0;
+    if (!safe_read_value(this_ptr, &vtable)) return;
+    if (vtable != 0x11d1f298) return;  // only CCliLogicMonster (any NetID)
+
+    uint32_t entity_net_id = 0;
+    safe_read_value(this_ptr + 0x04, &entity_net_id);
+
+    DWORD *stack = hook_stack(ctx);
+    uint32_t ret_addr = stack[0];
+    uint32_t pos_ptr = stack[1];
+    float x = 0, y = 0, z = 0;
+    safe_read_value(pos_ptr,     &x);
+    safe_read_value(pos_ptr + 4, &y);
+    safe_read_value(pos_ptr + 8, &z);
+
+    char ret_buf[48];
+    format_module_offset(ret_addr, ret_buf, sizeof(ret_buf));
+    log("[SetPos] this=%p netid=%u pos=(%.3f, %.3f, %.3f) ret=%p (%s) tid=%lu\n",
+        (void *)this_ptr, entity_net_id, x, y, z,
+        (void *)ret_addr, ret_buf, GetCurrentThreadId());
 }
 
 static void on_btobj_simple_locomotion(HookContext *ctx) {
@@ -894,7 +1296,7 @@ static void on_btobj_simple_locomotion(HookContext *ctx) {
     float target_y = read_unaligned<float>(reinterpret_cast<const uint8_t *>(packet_ptr + 0x28));
     float target_z = read_unaligned<float>(reinterpret_cast<const uint8_t *>(packet_ptr + 0x2C));
 
-    log("[CMD730] ENTER ret:%p ecx:%p packet:%p entity:%u pos:(%.2f,%.2f,%.2f) rot:(%.2f,%.2f,%.2f,%.2f) target:(%.2f,%.2f,%.2f)\n",
+    log("[CMD730] ENTER ret=%p ecx=%p packet=%p entity=%u pos=(%.2f,%.2f,%.2f) rot=(%.2f,%.2f,%.2f,%.2f) target=(%.2f,%.2f,%.2f)\n",
         (void *)stack[0],
         (void *)ctx->ecx,
         (void *)packet_ptr,
@@ -920,7 +1322,7 @@ static void on_monster_ai_skill(HookContext *ctx) {
     }
     safe_read_value(packet_ptr + 0x08, &skill_id);
 
-    log("[CMD720] ENTER ret:%p packet:%p entity:%u skill:%u\n",
+    log("[CMD720] ENTER ret=%p packet=%p entity=%u skill=%u\n",
         (void *)return_address,
         (void *)packet_ptr,
         entity_id,
@@ -947,7 +1349,7 @@ static void on_staticdata_init(HookContext *ctx) {
     uint32_t param_3 = stack[3];
     uint32_t current_env = 0;
     safe_read_value(crygame_base + OFF_DAT_12387c6c, &current_env);
-    log("[StaticDataEnv_Init] CALLED param1:%p param2:%p param3:%p current_env:%p\n",
+    log("[StaticDataEnv_Init] CALLED param1=%p param2=%p param3=%p current_env=%p\n",
         (void *)param_1, (void *)param_2, (void *)param_3, (void *)current_env);
     if (param_1 > 0x10000) {
         log("[StaticDataEnv_Init] param1_str: %.128s\n", (char *)param_1);
@@ -961,7 +1363,7 @@ static void on_staticdata_set(HookContext *ctx) {
     uint32_t value = stack[1];
     uint32_t current_env = 0;
     safe_read_value(crygame_base + OFF_DAT_12387c6c, &current_env);
-    log("[StaticDataEnv_Set] CALLED value:%p current_env:%p\n",
+    log("[StaticDataEnv_Set] CALLED value=%p current_env=%p\n",
         (void *)value, (void *)current_env);
 }
 
@@ -979,7 +1381,7 @@ static void on_level_load(HookContext *ctx) {
     safe_read_value(crygame_base + OFF_DAT_12387c6c, &current_env);
     safe_read_value(crygame_base + OFF_g_pCBattleGround, &bg);
     safe_read_value(crygame_base + OFF_g_pCGameRules, &gr);
-    log("[LevelLoad] CALLED this:%p param2:%p param3:%p env:%p BG:%p GR:%p\n",
+    log("[LevelLoad] CALLED this=%p param2=%p param3=%p env=%p BG=%p GR=%p\n",
         (void *)this_ptr, (void *)param_2, (void *)param_3,
         (void *)current_env, (void *)bg, (void *)gr);
     if (param_3 > 0x10000) {
@@ -993,7 +1395,7 @@ static void on_level_load(HookContext *ctx) {
                     if (env_val > 0x10000) {
                         uint8_t loaded_flag = 0;
                         if (safe_read_value(env_val, &loaded_flag)) {
-                            log("[LevelLoad] env loaded_flag:%u\n", loaded_flag);
+                            log("[LevelLoad] env loaded_flag=%u\n", loaded_flag);
                         }
                     }
                 }
@@ -1010,7 +1412,7 @@ static void on_startup_init(HookContext *ctx) {
     uint32_t param_2 = stack[1];
     uint32_t param_3 = stack[2];
     uint32_t param_4 = stack[3];
-    log("[StartupInit] CALLED this:%p param2:%p param3:%p param4:%p\n",
+    log("[StartupInit] CALLED this=%p param2=%p param3=%p param4=%p\n",
         (void *)this_ptr, (void *)param_2, (void *)param_3, (void *)param_4);
     if (param_2 > 0x10000) {
         log("[StartupInit] path: %.128s\n", (char *)param_2);
@@ -1025,7 +1427,7 @@ static void on_load_data(HookContext *ctx) {
     uint32_t param_2 = stack[1];
     uint32_t param_3 = stack[2];
     uint32_t param_4 = stack[3];
-    log("[LoadData] CALLED this(env):%p param2:%p param3:%p param4:%p\n",
+    log("[LoadData] CALLED this(env):%p param2=%p param3=%p param4=%p\n",
         (void *)this_ptr, (void *)param_2, (void *)param_3, (void *)param_4);
     if (param_3 > 0x10000) {
         log("[LoadData] param3_str: %.128s\n", (char *)param_3);
@@ -1045,6 +1447,10 @@ static const uint8_t protocol_dispatch_entry_stolen[] = {0x55, 0x8B, 0xEC, 0x8B,
 
 // crygame + 0x1223148: push [ebp+0Ch] (FF 75 0C) + mov eax,[ecx] (8B 01) = 5 bytes
 static const uint8_t call_handler_stolen[] = {0xFF, 0x75, 0x0C, 0x8B, 0x01};
+
+// crygame + 0x146b830 CBuffBase::SetPosition prologue:
+//   push ebp; mov ebp,esp; mov edx,[ebp+8] = 6 bytes
+static const uint8_t set_position_stolen[] = {0x55, 0x8B, 0xEC, 0x8B, 0x55, 0x08};
 
 // crygame + 0x12a5580: push ebp + mov ebp,esp + sub esp,1C + push edi + mov edi,ecx = 9 bytes
 static const uint8_t monster_appear_single_stolen[] = {0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x1C, 0x57, 0x8B, 0xF9};
@@ -1186,6 +1592,40 @@ static void on_tersafe_slot30(HookContext *ctx) {
 }
 static const uint8_t tersafe_slot30_stolen[] = {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF8};
 
+// crygame + 0x621040 (Dispatch_CMD_641_MonsterLocomotion) prologue:
+//   push ebp(55) + mov ebp,esp(8B EC) + push ebx(53) + push esi(56) = 5 bytes
+// Same prologue shape for 0x621660 (CMD 648) and 0x6217b0 (CMD 651).
+static const uint8_t dispatch_cmd_641_stolen[] = {0x55, 0x8B, 0xEC, 0x53, 0x56};
+static const uint8_t dispatch_cmd_648_stolen[] = {0x55, 0x8B, 0xEC, 0x53, 0x56};
+static const uint8_t dispatch_cmd_651_stolen[] = {0x55, 0x8B, 0xEC, 0x53, 0x56};
+
+// crygame + 0x65ede0 (CmdDispatchSwitch) prologue:
+//   push ebp(55) + mov ebp,esp(8B EC) + mov ecx,[ecx+0x3c](8B 49 3C) = 6 bytes
+static const uint8_t cmd_dispatch_switch_stolen[] = {0x55, 0x8B, 0xEC, 0x8B, 0x49, 0x3C};
+
+// crygame + 0xBA8B60 (BB_ReadSteeringProperties) prologue:
+//   push ebp(55) + mov ebp,esp(8B EC) + sub esp,0x2A0(81 EC A0 02 00 00) = 9 bytes
+static const uint8_t bb_read_steering_stolen[] = {
+    0x55, 0x8B, 0xEC, 0x81, 0xEC, 0xA0, 0x02, 0x00, 0x00
+};
+
+// crygame + 0xBA92CC — mid-function hook at the vt[5] call site inside
+// BB_ReadSteeringProperties. Captures: mov eax,[ecx](8B 01) + push ebx(53)
+// + call [eax+0x14](FF 50 14) = 6 bytes. After the trampoline runs these
+// stolen bytes, control resumes at 0xBA92D2 (past the original call site).
+static const uint8_t path_c1_vt5_stolen[] = {0x8B, 0x01, 0x53, 0xFF, 0x50, 0x14};
+
+// --- TerSafe proxy observation hooks ---
+// Opt-in via ag_mho.ini `hook_tersafe = 1`. Disabled by default because they
+// fire on every packet and are very noisy; useful only for TenProtect/TerSafe
+// investigation.
+static const JmpHookEntry crygame_tersafe_jmp_hooks[] = {
+    {0x45DA50,   on_tersafe_vt1_wrapper,       tersafe_vt1_stolen,               sizeof(tersafe_vt1_stolen)},
+    {0x45DBC0,   on_tersafe_vt3_wrapper,       tersafe_vt3_stolen,               sizeof(tersafe_vt3_stolen)},
+    {0x45A090,   on_tersafe_slot30,            tersafe_slot30_stolen,            sizeof(tersafe_slot30_stolen)},
+    {0xF0955D,   on_pre_dispatch,              pre_dispatch_stolen,              sizeof(pre_dispatch_stolen)},
+};
+
 static const JmpHookEntry crygame_jmp_hooks[] = {
     {0x12408f0,  on_protocol_handler_recv_msg, protocol_on_recv_msg_stolen,     sizeof(protocol_on_recv_msg_stolen)},
     {0x12230c0,  on_protocol_dispatch_entry,   protocol_dispatch_entry_stolen,   sizeof(protocol_dispatch_entry_stolen)},
@@ -1199,6 +1639,7 @@ static const JmpHookEntry crygame_jmp_hooks[] = {
     {0x13a3da0,  on_set_monster_info,          set_monster_info_stolen,          sizeof(set_monster_info_stolen)},
     {0x13a23b0,  on_get_monster_info,          get_monster_info_stolen,          sizeof(get_monster_info_stolen)},
     {0x13a3720,  on_init_from_appear,          init_from_appear_stolen,          sizeof(init_from_appear_stolen)},
+    {0x146b830,  on_set_position,              set_position_stolen,              sizeof(set_position_stolen)},
     {0x1289a00,  on_btobj_simple_locomotion,   btobj_simple_locomotion_stolen,   sizeof(btobj_simple_locomotion_stolen)},
     {0x12e3bec,  on_monster_ai_skill,          monster_ai_skill_stolen,          sizeof(monster_ai_skill_stolen)},
     {0x50ab31,   on_log_notification,          log_notification_stolen,          sizeof(log_notification_stolen)},
@@ -1207,10 +1648,12 @@ static const JmpHookEntry crygame_jmp_hooks[] = {
     {0x0c3f520,  on_level_load,                level_load_stolen,                sizeof(level_load_stolen)},
     {0x0b7ffd0,  on_startup_init,              startup_init_stolen,              sizeof(startup_init_stolen)},
     {0x169ed30,  on_load_data,                 load_data_stolen,                 sizeof(load_data_stolen)},
-    {0x45DA50,   on_tersafe_vt1_wrapper,       tersafe_vt1_stolen,               sizeof(tersafe_vt1_stolen)},
-    {0x45DBC0,   on_tersafe_vt3_wrapper,       tersafe_vt3_stolen,               sizeof(tersafe_vt3_stolen)},
-    {0x45A090,   on_tersafe_slot30,            tersafe_slot30_stolen,            sizeof(tersafe_slot30_stolen)},
-    {0xF0955D,   on_pre_dispatch,              pre_dispatch_stolen,              sizeof(pre_dispatch_stolen)},
+    {0x65ede0,   on_cmd_dispatch_switch,       cmd_dispatch_switch_stolen,       sizeof(cmd_dispatch_switch_stolen)},
+    {0x621040,   on_dispatch_cmd_641,          dispatch_cmd_641_stolen,          sizeof(dispatch_cmd_641_stolen)},
+    {0x621660,   on_dispatch_cmd_648,          dispatch_cmd_648_stolen,          sizeof(dispatch_cmd_648_stolen)},
+    {0x6217b0,   on_dispatch_cmd_651,          dispatch_cmd_651_stolen,          sizeof(dispatch_cmd_651_stolen)},
+    {0xBA8B60,   on_bb_read_steering_properties, bb_read_steering_stolen,        sizeof(bb_read_steering_stolen)},
+    {0xBA92CC,   on_path_c1_vt5_call,          path_c1_vt5_stolen,               sizeof(path_c1_vt5_stolen)},
 };
 
 // --- install ---
@@ -1220,18 +1663,31 @@ void install_crygame_hooks() {
     crygame_base = base;
     log("got crygame: %p \n", (void *)base);
 
+    // Resolve other module bases for the backtrace formatter. These may be 0
+    // if the module isn't loaded yet — backtrace just prints "?+0x…" then.
+    mhoclient_base_bt = (DWORD)GetModuleHandleA("MHOClient.exe");
+    tenproxy_base_bt  = (DWORD)GetModuleHandleA("tenproxy.dll");
+    protocal_base_bt  = (DWORD)GetModuleHandleA("protocalhandler.dll");
+    msvcr120_base_bt  = (DWORD)GetModuleHandleA("MSVCR120.dll");
+    ntdll_base_bt     = (DWORD)GetModuleHandleA("ntdll.dll");
+    kernel32_base_bt  = (DWORD)GetModuleHandleA("kernel32.dll");
+    log("bt modules: mho=%p tp=%p ph=%p msvcr=%p ntdll=%p k32=%p\n",
+        (void *)mhoclient_base_bt, (void *)tenproxy_base_bt,
+        (void *)protocal_base_bt, (void *)msvcr120_base_bt,
+        (void *)ntdll_base_bt, (void *)kernel32_base_bt);
+
     // Log initial state of CStaticDataEnv
     uint32_t env0 = 0;
     uint32_t flag0 = 0;
     safe_read_value(base + OFF_DAT_12387c6c, &env0);
     safe_read_value(base + OFF_DAT_12387c70, &flag0);
-    log("[init] CStaticDataEnv:%p flag:%u\n", (void *)env0, flag0);
+    log("[init] CStaticDataEnv=%p flag=%u\n", (void *)env0, flag0);
 
     // Check if CStaticDataEnv was loaded (first byte = loaded flag)
     if (env0 > 0x10000) {
         uint8_t loaded_flag = 0;
         if (safe_read_value(env0, &loaded_flag)) {
-            log("[init] CStaticDataEnv->loaded_flag:%u\n", loaded_flag);
+            log("[init] CStaticDataEnv->loaded_flag=%u\n", loaded_flag);
         }
     }
 
@@ -1246,7 +1702,7 @@ void install_crygame_hooks() {
     // Check g_CMonsterInfo_SingletonPtr
     uint32_t moninfo0 = 0;
     safe_read_value(base + OFF_g_CMonsterInfo_Ptr, &moninfo0);
-    log("[init] g_CMonsterInfo_SingletonPtr:%p\n", (void *)moninfo0);
+    log("[init] g_CMonsterInfo_SingletonPtr=%p\n", (void *)moninfo0);
 
     // Dump CStaticDataEnv internal structure (first 32 bytes)
     if (env0 > 0x10000) {
@@ -1260,5 +1716,16 @@ void install_crygame_hooks() {
 
     org_fn_crygame_13EC290 = (fn_crygame_13EC290)(base + 0x13F3640);
 
+    // ini is created at DLL startup in dllmain `run()` before any hook thread.
+    std::wstring ini_path = get_exe_dir() + L"ag_mho.ini";
+    auto ag_cfg = ag_ini_read(ini_path);
+    bool enable_tersafe = ag_ini_get_int(ag_cfg, "hook_tersafe", 0) != 0;
+    log("config hook_tersafe = %d %s\n",
+        enable_tersafe ? 1 : 0,
+        enable_tersafe ? "(tersafe hooks installed)" : "(tersafe hooks skipped)");
+
     install_jmp_hooks(base, crygame_jmp_hooks, std::size(crygame_jmp_hooks));
+    if (enable_tersafe) {
+        install_jmp_hooks(base, crygame_tersafe_jmp_hooks, std::size(crygame_tersafe_jmp_hooks));
+    }
 }

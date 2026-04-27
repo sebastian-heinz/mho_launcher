@@ -97,17 +97,16 @@ PROCESS_INFORMATION CreateMhoProcessOrg(
     return pi;
 }
 
-void inject_lunch(PROCESS_INFORMATION pi) {
+void inject_dll(PROCESS_INFORMATION pi, const std::wstring &dll_path) {
     if (pi.hProcess == NULL) {
-        llog("inject_lunch: skipped, no process\n");
+        llog("inject_dll: skipped, no process\n");
         return;
     }
 
-    std::wstring mho_launcher_lib_path = get_exe_dir() + L"ag_mho.dll";
-    llog("Injecting DLL: \"%s\"\n", ws_2_s(mho_launcher_lib_path).c_str());
+    llog("Injecting DLL: \"%s\"\n", ws_2_s(dll_path).c_str());
 
-    const wchar_t *lib_path = mho_launcher_lib_path.c_str();
-    SIZE_T lib_path_size = wcslen(lib_path) * sizeof(wchar_t);
+    const wchar_t *lib_path = dll_path.c_str();
+    SIZE_T lib_path_size = (wcslen(lib_path) + 1) * sizeof(wchar_t);
     void *lib_base_address = VirtualAllocEx(
             pi.hProcess, NULL, lib_path_size, MEM_COMMIT, PAGE_EXECUTE_READWRITE);
     if (!lib_base_address) {
@@ -126,7 +125,31 @@ void inject_lunch(PROCESS_INFORMATION pi) {
         llog("CreateRemoteThread failed (%lu)\n", GetLastError());
         return;
     }
-    llog("DLL injected successfully\n");
+
+    // LoadLibraryW's return (the HMODULE, or NULL on failure) becomes the
+    // remote thread's exit code. Wait for it and check — CreateRemoteThread
+    // returning a valid handle only means the thread started, not that the
+    // DLL actually loaded (e.g. wrong bitness, missing dep).
+    WaitForSingleObject(load_library_thread, INFINITE);
+    DWORD remote_hmodule = 0;
+    GetExitCodeThread(load_library_thread, &remote_hmodule);
+    CloseHandle(load_library_thread);
+
+    if (remote_hmodule == 0) {
+        llog("DLL injection FAILED (LoadLibraryW returned NULL): \"%s\"\n",
+             ws_2_s(dll_path).c_str());
+        return;
+    }
+    llog("DLL injected successfully: \"%s\" (HMODULE=0x%08lX)\n",
+         ws_2_s(dll_path).c_str(), remote_hmodule);
+}
+
+void inject_lunch(PROCESS_INFORMATION pi) {
+    inject_dll(pi, get_exe_dir() + L"ag_mho.dll");
+}
+
+void inject_haunt(PROCESS_INFORMATION pi) {
+    inject_dll(pi, get_exe_dir() + L"haunt-x86.dll");
 }
 
 int main(int argc, char *argv[]) {
@@ -163,10 +186,15 @@ int main(int argc, char *argv[]) {
     }
     auto ag_cfg = ag_ini_read(ini_path);
     int cfg_inject_dll = ag_ini_get_int(ag_cfg, "inject_dll", 0);
+    int cfg_inject_haunt = ag_ini_get_int(ag_cfg, "inject_haunt", 0);
     llog("config inject_dll = %d\n", cfg_inject_dll);
+    llog("config inject_haunt = %d\n", cfg_inject_haunt);
 
     if (!cfg_inject_dll) {
         PROCESS_INFORMATION pi = CreateMhoProcessOrg(mho_dir, mho_exe, mho_arg, work_dir);
+        if (cfg_inject_haunt) {
+            inject_haunt(pi);
+        }
         TenProxyTclsSharedMeMemory *tptsmm = new TenProxyTclsSharedMeMemory();
         tptsmm->map(pi.dwProcessId);
         do {
@@ -175,6 +203,9 @@ int main(int argc, char *argv[]) {
     } else {
         PROCESS_INFORMATION pi = CreateMhoProcess(mho_dir, mho_exe, mho_arg, work_dir);
         inject_lunch(pi);
+        if (cfg_inject_haunt) {
+            inject_haunt(pi);
+        }
         do {
             std::cout << '\n' << "Press a key to resume MHOClient.exe...";
         } while (std::cin.get() != '\n');
